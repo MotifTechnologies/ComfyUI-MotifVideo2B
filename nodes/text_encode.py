@@ -1,10 +1,17 @@
-# TODO: Full implementation in checklist item 6.
-# Input:  CLIP, text (prompt), negative_prompt
-# Output: CONDITIONING (positive), CONDITIONING (negative)
+"""MotifVideo text encoding node.
+
+Convenience node that encodes both positive and negative prompts in one step.
+Also compatible with standard CLIPTextEncode node (use that if you prefer
+separate positive/negative encoding).
+"""
 
 
 class MotifTextEncode:
-    """Placeholder — full implementation in checklist item 6."""
+    """Encode positive and negative prompts for MotifVideo in one node.
+
+    Equivalent to two CLIPTextEncode nodes but combined for convenience.
+    Output CONDITIONING is compatible with KSampler positive/negative inputs.
+    """
 
     @classmethod
     def INPUT_TYPES(s):
@@ -12,7 +19,13 @@ class MotifTextEncode:
             "required": {
                 "clip": ("CLIP",),
                 "text": ("STRING", {"multiline": True, "default": ""}),
-                "negative_prompt": ("STRING", {"multiline": True, "default": ""}),
+                "negative_prompt": (
+                    "STRING",
+                    {
+                        "multiline": True,
+                        "default": "blurry, low quality, distorted, artifacts",
+                    },
+                ),
             }
         }
 
@@ -22,4 +35,7 @@ class MotifTextEncode:
     CATEGORY = "motifvideo"
 
     def encode(self, clip, text, negative_prompt):
-        raise NotImplementedError("MotifTextEncode: not yet implemented (checklist item 6)")
+        # encode_from_tokens_scheduled returns CONDITIONING format directly
+        positive = clip.encode_from_tokens_scheduled(clip.tokenize(text))
+        negative = clip.encode_from_tokens_scheduled(clip.tokenize(negative_prompt))
+        return (positive, negative)

@@ -55,10 +55,20 @@ class MotifVideoModel(comfy.model_base.BaseModel):
         model_config.unet_config = original_unet_config  # restore
 
         # self.diffusion_model is not set yet — create transformer + adapter.
-        transformer = MotifVideoTransformer3DModel(**{
+        # Filter unet_config to only valid MotifVideoTransformer3DModel constructor params.
+        _TRANSFORMER_PARAMS = {
+            "in_channels", "out_channels", "num_attention_heads", "attention_head_dim",
+            "num_layers", "num_single_layers", "num_decoder_layers", "mlp_ratio",
+            "patch_size", "patch_size_t", "qk_norm", "norm_type",
+            "text_embed_dim", "image_embed_dim", "pooled_projection_dim",
+            "rope_theta", "rope_axes_dim", "base_latent_size",
+            "cross_attention_dual", "cross_attention_single",
+        }
+        transformer_kwargs = {
             k: v for k, v in original_unet_config.items()
-            if k != "disable_unet_model_creation"
-        })
+            if k in _TRANSFORMER_PARAMS
+        }
+        transformer = MotifVideoTransformer3DModel(**transformer_kwargs)
         self.diffusion_model = MotifVideoModelAdapter(transformer)
         self.diffusion_model.eval()
 

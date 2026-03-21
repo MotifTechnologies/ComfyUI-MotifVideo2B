@@ -46,15 +46,29 @@ try:
             while '{}single_transformer_blocks.{}.attn.to_k.weight'.format(key_prefix, num_single_layers) in state_dict:
                 num_single_layers += 1
 
-            # Return marker + detected values. matches() only checks "image_model".
+            # in_channels from x_embedder
+            x_embed_w = state_dict['{}x_embedder.proj.weight'.format(key_prefix)]
+            in_channels = x_embed_w.shape[1]
+
+            # out_channels: proj_out.weight shape [patch_size^2 * out_channels, inner_dim]
+            proj_out_w = state_dict['{}proj_out.weight'.format(key_prefix)]
+            patch_size = 2  # MotifVideo fixed spatial patch
+            out_channels = proj_out_w.shape[0] // (patch_size * patch_size)
+
             return {
                 "image_model": "motif_video",
+                "in_channels": in_channels,
+                "out_channels": out_channels,
                 "num_attention_heads": num_attention_heads,
                 "attention_head_dim": attention_head_dim,
                 "num_layers": num_layers,
                 "num_single_layers": num_single_layers,
+                "num_decoder_layers": 0,  # detected dynamically, 0 if absent
                 "text_embed_dim": text_embed_dim,
                 "image_embed_dim": image_embed_dim,
+                "patch_size": patch_size,
+                "patch_size_t": 1,
+                "rope_axes_dim": [16, 56, 56],
             }
 
         # Not a MotifVideo model — fall through to original detection logic.

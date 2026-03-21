@@ -55,6 +55,5 @@ class MotifVideo19B(supported_models_base.BASE):
         return MotifVideoModel(self, device=device)
 
     def clip_target(self, state_dict={}):
-        # TODO: checklist item 4 — T5Gemma2 text encoder integration.
-        # The loader node handles text encoder loading independently for now.
-        return None
+        from .text_encoders.t5_gemma2 import MotifVideoSD1Tokenizer, te
+        return supported_models_base.ClipTarget(MotifVideoSD1Tokenizer, te())

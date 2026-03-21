@@ -80,18 +80,18 @@ except Exception as e:
     print(f"[ComfyUI-MotifVideo1.9B] WARNING: Failed to patch model_detection: {e}")
 
 try:
-    from .nodes.loader import MotifVideoModelLoader
+    from .nodes.loader import MotifTextEncoderLoader
     from .nodes.text_encode import MotifTextEncode
     from .nodes.latent import EmptyMotifLatent
 
     NODE_CLASS_MAPPINGS = {
-        "MotifVideoModelLoader": MotifVideoModelLoader,
+        "MotifTextEncoderLoader": MotifTextEncoderLoader,
         "MotifTextEncode": MotifTextEncode,
         "EmptyMotifLatent": EmptyMotifLatent,
     }
 
     NODE_DISPLAY_NAME_MAPPINGS = {
-        "MotifVideoModelLoader": "Load MotifVideo 1.9B Model",
+        "MotifTextEncoderLoader": "Load MotifVideo Text Encoder",
         "MotifTextEncode": "MotifVideo Text Encode",
         "EmptyMotifLatent": "Empty MotifVideo Latent",
     }

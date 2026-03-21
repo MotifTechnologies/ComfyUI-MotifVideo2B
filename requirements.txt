@@ -1,3 +1,7 @@
 diffusers>=0.35.2
 transformers>=5.0.0
+accelerate
 einops
+loguru
+peft
+sentencepiece

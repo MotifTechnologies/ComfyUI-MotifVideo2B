@@ -1,0 +1,16 @@
+.plans/
+.manuals/
+.claude/settings.local.json
+.claude/.template-manifest
+_old_claude_files/
+tmp/
+.env
+*.pyc
+__pycache__/
+results/
+experiments/**/outputs/
+experiments/**/checkpoints/
+experiments/**/*.pt
+experiments/**/*.ckpt
+.hook-state
+.hook-state.lock

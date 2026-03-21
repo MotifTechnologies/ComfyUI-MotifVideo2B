@@ -1,0 +1,10 @@
+[project]
+name = "comfyui-motifvideo-1-9b"
+version = "0.1.0"
+description = "ComfyUI custom nodes for MotifVideo 1.9B video generation"
+requires-python = ">=3.10"
+dependencies = [
+    "diffusers>=0.35.2",
+    "transformers>=5.0.0",
+    "einops",
+]

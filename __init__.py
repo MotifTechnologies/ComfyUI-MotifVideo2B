@@ -13,6 +13,58 @@ try:
 except Exception as e:
     print(f"[ComfyUI-MotifVideo1.9B] WARNING: Failed to register model config: {e}")
 
+# Monkey-patch comfy.model_detection.detect_unet_config to support MotifVideo transformers.
+# detect_unet_config() is called by comfy.sd.load_diffusion_model() via Load Diffusion Model node.
+# MotifVideo is identified by the combination of context_embedder.linear_1.weight and
+# image_embedder.linear_1.weight keys, which are unique to this architecture.
+try:
+    import comfy.model_detection
+
+    _original_detect_unet_config = comfy.model_detection.detect_unet_config
+
+    def _detect_unet_config_with_motif(state_dict, key_prefix, metadata=None):
+        # MotifVideo detection: context_embedder + image_embedder combination is unique.
+        if ('{}context_embedder.linear_1.weight'.format(key_prefix) in state_dict and
+                '{}image_embedder.linear_1.weight'.format(key_prefix) in state_dict):
+
+            context_w = state_dict['{}context_embedder.linear_1.weight'.format(key_prefix)]
+            image_w = state_dict['{}image_embedder.linear_1.weight'.format(key_prefix)]
+            attn_k_w = state_dict['{}single_transformer_blocks.0.attn.to_k.weight'.format(key_prefix)]
+
+            # Dynamically detect architecture params from state_dict shapes.
+            inner_dim = attn_k_w.shape[0]
+            attention_head_dim = 128  # rope_axes_dim sum: 16+56+56
+            num_attention_heads = inner_dim // attention_head_dim
+            text_embed_dim = context_w.shape[1]
+            image_embed_dim = image_w.shape[1]
+
+            # Count block types by iterating keys.
+            num_layers = 0
+            while '{}transformer_blocks.{}.norm1.linear.weight'.format(key_prefix, num_layers) in state_dict:
+                num_layers += 1
+            num_single_layers = 0
+            while '{}single_transformer_blocks.{}.attn.to_k.weight'.format(key_prefix, num_single_layers) in state_dict:
+                num_single_layers += 1
+
+            # Return marker + detected values. matches() only checks "image_model".
+            return {
+                "image_model": "motif_video",
+                "num_attention_heads": num_attention_heads,
+                "attention_head_dim": attention_head_dim,
+                "num_layers": num_layers,
+                "num_single_layers": num_single_layers,
+                "text_embed_dim": text_embed_dim,
+                "image_embed_dim": image_embed_dim,
+            }
+
+        # Not a MotifVideo model — fall through to original detection logic.
+        return _original_detect_unet_config(state_dict, key_prefix, metadata=metadata)
+
+    comfy.model_detection.detect_unet_config = _detect_unet_config_with_motif
+    print("[ComfyUI-MotifVideo1.9B] detect_unet_config monkey-patch applied.")
+except Exception as e:
+    print(f"[ComfyUI-MotifVideo1.9B] WARNING: Failed to patch model_detection: {e}")
+
 try:
     from .nodes.loader import MotifVideoModelLoader
     from .nodes.text_encode import MotifTextEncode

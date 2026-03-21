@@ -23,22 +23,11 @@ from .models.latent_format import MotifVideoLatent
 
 
 class MotifVideo19B(supported_models_base.BASE):
+    # Only the marker key is used for matches(). Architecture params are detected
+    # dynamically from the checkpoint and stored in unet_config at load time.
+    # This avoids match failures when the model architecture evolves.
     unet_config = {
-        # Marker key — used by our loader and matches() for explicit detection.
         "image_model": "motif_video",
-        # Values from transformer/config.json:
-        "in_channels": 33,
-        "out_channels": 16,
-        "num_attention_heads": 12,
-        "attention_head_dim": 128,
-        "num_layers": 12,
-        "num_single_layers": 24,
-        "num_decoder_layers": 8,
-        "text_embed_dim": 2560,
-        "image_embed_dim": 1152,
-        "patch_size": 2,
-        "patch_size_t": 1,
-        "rope_axes_dim": (16, 56, 56),
     }
 
     unet_extra_config = {}

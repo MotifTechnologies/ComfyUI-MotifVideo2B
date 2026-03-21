@@ -103,17 +103,12 @@ class TestConfigCheckpointMatch(unittest.TestCase):
                             if isinstance(target, ast.Name) and target.id == "sampling_settings":
                                 cls.sampling_settings = ast.literal_eval(item.value)
 
-    @unittest.skipUnless(os.path.exists(TRANSFORMER_CONFIG), "checkpoint not available")
-    def test_matches_transformer_config(self):
-        with open(TRANSFORMER_CONFIG) as f:
-            ckpt = json.load(f)
-        for key in ["in_channels", "out_channels", "num_attention_heads",
-                     "attention_head_dim", "num_layers", "num_single_layers",
-                     "num_decoder_layers", "text_embed_dim", "patch_size", "patch_size_t"]:
-            self.assertEqual(
-                self.unet_config[key], ckpt[key],
-                f"config.py unet_config['{key}']={self.unet_config[key]} != checkpoint {ckpt[key]}"
-            )
+    def test_image_model_marker(self):
+        self.assertEqual(self.unet_config["image_model"], "motif_video")
+
+    def test_unet_config_minimal(self):
+        """unet_config should only have the marker — architecture params are detected dynamically."""
+        self.assertEqual(len(self.unet_config), 1, "unet_config should only contain image_model marker")
 
     @unittest.skipUnless(os.path.exists(SCHEDULER_CONFIG), "checkpoint not available")
     def test_shift_matches_scheduler(self):
@@ -121,12 +116,6 @@ class TestConfigCheckpointMatch(unittest.TestCase):
             sched = json.load(f)
         expected = sched.get("shift", sched.get("global_shift"))
         self.assertEqual(self.sampling_settings["shift"], expected)
-
-    def test_image_model_marker(self):
-        self.assertEqual(self.unet_config["image_model"], "motif_video")
-
-    def test_in_channels_33(self):
-        self.assertEqual(self.unet_config["in_channels"], 33)
 
 
 if __name__ == "__main__":

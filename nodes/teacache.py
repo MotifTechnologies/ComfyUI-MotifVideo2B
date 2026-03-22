@@ -31,20 +31,17 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Polynomial rescaling coefficients
 # ---------------------------------------------------------------------------
-# These are placeholder coefficients adapted from FLUX (similar MMDiT-style
-# architecture). MotifVideo-specific calibration should be done empirically
-# (checklist item 2). Using FLUX coefficients as a starting point.
+# Polynomial rescaling: maps raw input L1 diff to estimated output diff.
+# Form: rescaled = c[0]*x^4 + c[1]*x^3 + c[2]*x^2 + c[3]*x + c[4]
 #
-# Form: rescaled_diff = c[0] + c[1]*x + c[2]*x^2 + c[3]*x^3 + c[4]*x^4
-# where x = raw_l1_diff (relative L1 between modulated inputs)
-#
-# TODO (item 2): Replace with MotifVideo-calibrated coefficients.
+# Calibrated on MotifVideo 1.9B (447 data points, image + video 720p 121f).
+# R² = 0.708. Use calibrate=True to recalibrate on your own data.
 _MOTIF_POLY_COEFFS = [
-    4.98651651e+02,
-    -2.83781631e+02,
-    5.58554382e+01,
-    -3.82021401e+00,
-    2.64230861e-01,
+    2.732448052820203,
+    -13.565045836418308,
+    17.82483016383567,
+    -1.9267397151033308,
+    0.0929721136898134,
 ]
 
 

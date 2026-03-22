@@ -145,6 +145,12 @@ class MotifVideoModel(comfy.model_base.BaseModel):
         attention_mask = kwargs.get("attention_mask", None)
         if attention_mask is not None:
             out["encoder_attention_mask"] = comfy.conds.CONDRegular(attention_mask)
+        elif cross_attn is not None:
+            # Auto-generate all-ones mask if text encoder didn't provide one.
+            # Shape: [B, seq_len] matching cross_attn [B, seq_len, hidden_dim].
+            out["encoder_attention_mask"] = comfy.conds.CONDRegular(
+                torch.ones(cross_attn.shape[:2], dtype=torch.bool, device=cross_attn.device)
+            )
 
         pooled_projections = kwargs.get("pooled_projections", None)
         if pooled_projections is not None:

@@ -298,16 +298,6 @@ def _make_teacache_forward(original_adapter_forward, transformer, state: _TeaCac
             state.previous_residual = (output - ori_noise[:, :out_ch]).clone()
             state.step_counter += 1
 
-            # Print summary at last step
-            if len(state.calibration_data) > 0:
-                raw_diffs = [d[0] for d in state.calibration_data]
-                out_diffs = [d[1] for d in state.calibration_data]
-                coeffs = np.polyfit(raw_diffs, out_diffs, 4)
-                print(
-                    f"[TeaCache:CALIB] collected={len(state.calibration_data)} points | "
-                    f"poly_coeffs (copy this): {coeffs.tolist()}"
-                )
-
             return output
 
         # ------------------------------------------------------------------

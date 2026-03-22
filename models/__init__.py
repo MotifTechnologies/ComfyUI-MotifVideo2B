@@ -57,7 +57,6 @@ def _make_comfyui_forward(original_forward):
             image_embeds=image_embeds,
             return_dict=False,
         )
-        # forward() returns (sample,) when return_dict=False
         return output[0]
     return comfyui_forward
 
@@ -107,6 +106,7 @@ class MotifVideoModel(comfy.model_base.BaseModel):
             k: v for k, v in original_unet_config.items()
             if k in _TRANSFORMER_PARAMS
         }
+        print(f"[MotifVideo] transformer_kwargs: { {k: v for k, v in transformer_kwargs.items() if k in ('rope_theta', 'num_decoder_layers', 'num_layers', 'num_single_layers', 'num_attention_heads', 'cross_attention_dual', 'cross_attention_single')} }")
         transformer = MotifVideoTransformer3DModel(**transformer_kwargs)
         # Cast to bfloat16 to match checkpoint weights — avoids dtype mismatch
         # when ComfyUI force-loads bfloat16 weights but biases stay float32.

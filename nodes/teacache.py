@@ -61,23 +61,30 @@ class _TeaCacheState:
         poly_coeffs: list,
         start: float = 0.0,
         end: float = 1.0,
+        calibrate: bool = False,
     ):
         self.rel_l1_thresh = rel_l1_thresh
         self.rescale_func = np.poly1d(poly_coeffs)
         self.start = start
         self.end = end
+        self.calibrate = calibrate
 
         # Cache tensors (reset between generations)
         self.accumulated_rel_l1_distance: float = 0.0
         self.previous_modulated_input: torch.Tensor | None = None
         self.previous_residual: torch.Tensor | None = None
+        self.previous_output: torch.Tensor | None = None
         self.step_counter: int = 0
+
+        # Calibration data collection
+        self.calibration_data: list[tuple[float, float]] = []
 
     def reset(self):
         """Reset all cache state. Call between separate video generations."""
         self.accumulated_rel_l1_distance = 0.0
         self.previous_modulated_input = None
         self.previous_residual = None
+        self.previous_output = None
         self.step_counter = 0
 
     def should_skip(self, current_modulated_inp: torch.Tensor) -> bool:
@@ -250,15 +257,65 @@ def _make_teacache_forward(original_adapter_forward, transformer, state: _TeaCac
         modulated_inp = _extract_modulated_input(transformer, x_embedded, temb)
 
         # ------------------------------------------------------------------
-        # Step 3: Cache decision
+        # Step 3: Calibration mode — always compute, collect raw/output diffs
+        # ------------------------------------------------------------------
+        if state.calibrate:
+            ori_noise = x[:, :16].clone()
+            output = original_adapter_forward(
+                x,
+                timestep,
+                context=context,
+                control=control,
+                transformer_options=transformer_options,
+                encoder_attention_mask=encoder_attention_mask,
+                pooled_projections=pooled_projections,
+                image_embeds=image_embeds,
+                **kwargs,
+            )
+
+            if state.previous_modulated_input is not None and state.previous_output is not None:
+                # Raw relative L1 diff (input space)
+                prev_mod = state.previous_modulated_input
+                mean_prev = prev_mod.abs().mean()
+                raw_diff = (modulated_inp - prev_mod).abs().mean() / (mean_prev + 1e-10)
+                raw_diff_val = raw_diff.cpu().item()
+
+                # Actual relative L1 diff (output space)
+                out_ch = output.shape[1]
+                mean_prev_out = state.previous_output.abs().mean()
+                output_diff = (output - state.previous_output).abs().mean() / (mean_prev_out + 1e-10)
+                output_diff_val = output_diff.cpu().item()
+
+                state.calibration_data.append((raw_diff_val, output_diff_val))
+                print(
+                    f"[TeaCache:CALIB] step={state.step_counter:3d} "
+                    f"raw_diff={raw_diff_val:.8f} output_diff={output_diff_val:.8f}"
+                )
+
+            state.previous_output = output.clone()
+            state.previous_modulated_input = modulated_inp.clone()
+            out_ch = output.shape[1]
+            state.previous_residual = (output - ori_noise[:, :out_ch]).clone()
+            state.step_counter += 1
+
+            # Print summary at last step
+            if len(state.calibration_data) > 0:
+                raw_diffs = [d[0] for d in state.calibration_data]
+                out_diffs = [d[1] for d in state.calibration_data]
+                coeffs = np.polyfit(raw_diffs, out_diffs, 4)
+                print(
+                    f"[TeaCache:CALIB] collected={len(state.calibration_data)} points | "
+                    f"poly_coeffs (copy this): {coeffs.tolist()}"
+                )
+
+            return output
+
+        # ------------------------------------------------------------------
+        # Step 3b: Normal mode — cache decision
         # ------------------------------------------------------------------
         skip = state.should_skip(modulated_inp)
 
         if skip:
-            # Reuse cached residual: full_output ≈ x_embedded_output + residual
-            # However, the residual was computed in the original latent space
-            # (adapter input x, shape [B, C, T, H, W]). We must return in
-            # that same space.
             logger.debug(
                 "[TeaCache] Step %d: SKIP (progress=%.4f, accumulated=%.4f < thresh=%.4f)",
                 state.step_counter,
@@ -381,6 +438,18 @@ class MotifTeaCache:
                         ),
                     },
                 ),
+                "calibrate": (
+                    "BOOLEAN",
+                    {
+                        "default": False,
+                        "tooltip": (
+                            "Calibration mode: runs full forward every step and "
+                            "prints raw_diff vs output_diff to console. "
+                            "Use the output poly_coeffs to replace the default. "
+                            "No caching is applied in this mode."
+                        ),
+                    },
+                ),
             }
         }
 
@@ -402,6 +471,7 @@ class MotifTeaCache:
         enable: bool,
         start: float = 0.0,
         end: float = 1.0,
+        calibrate: bool = False,
     ):
         """Patch the diffusion model with TeaCache logic.
 
@@ -456,6 +526,7 @@ class MotifTeaCache:
             poly_coeffs=_MOTIF_POLY_COEFFS,
             start=start,
             end=end,
+            calibrate=calibrate,
         )
 
         # Save original forward and install patched forward.
@@ -476,9 +547,11 @@ class MotifTeaCache:
         transformer._teacache_enabled = True
         transformer._teacache_state = state
 
+        mode = "CALIBRATION" if calibrate else "CACHING"
         logger.info(
             "[TeaCache] Patched MotifVideoTransformer3DModel (diffusion_model). "
-            "rel_l1_thresh=%.3f, start=%.2f, end=%.2f, poly_coeffs=%s",
+            "mode=%s, rel_l1_thresh=%.3f, start=%.2f, end=%.2f, poly_coeffs=%s",
+            mode,
             rel_l1_thresh,
             start,
             end,

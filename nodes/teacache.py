@@ -98,6 +98,11 @@ class _TeaCacheState:
             # No cache yet — always compute
             return False
 
+        # Shape mismatch guard (e.g. resolution changed between runs)
+        if self.previous_modulated_input.shape != current_modulated_inp.shape:
+            self.reset()
+            return False
+
         # Relative L1 distance between current and previous modulated input
         prev = self.previous_modulated_input
         mean_prev = prev.abs().mean()
@@ -273,7 +278,10 @@ def _make_teacache_forward(original_adapter_forward, transformer, state: _TeaCac
                 **kwargs,
             )
 
-            if state.previous_modulated_input is not None and state.previous_output is not None:
+            if (state.previous_modulated_input is not None
+                    and state.previous_output is not None
+                    and state.previous_modulated_input.shape == modulated_inp.shape
+                    and state.previous_output.shape == output.shape):
                 # Raw relative L1 diff (input space)
                 prev_mod = state.previous_modulated_input
                 mean_prev = prev_mod.abs().mean()

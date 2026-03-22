@@ -83,17 +83,20 @@ try:
     from .nodes.loader import MotifTextEncoderLoader
     from .nodes.text_encode import MotifTextEncode
     from .nodes.latent import EmptyMotifLatent
+    from .nodes.vae_loader import MotifVAELoader
 
     NODE_CLASS_MAPPINGS = {
         "MotifTextEncoderLoader": MotifTextEncoderLoader,
         "MotifTextEncode": MotifTextEncode,
         "EmptyMotifLatent": EmptyMotifLatent,
+        "MotifVAELoader": MotifVAELoader,
     }
 
     NODE_DISPLAY_NAME_MAPPINGS = {
         "MotifTextEncoderLoader": "Load MotifVideo Text Encoder",
         "MotifTextEncode": "MotifVideo Text Encode",
         "EmptyMotifLatent": "Empty MotifVideo Latent",
+        "MotifVAELoader": "Load MotifVideo VAE",
     }
 
 except Exception as e:

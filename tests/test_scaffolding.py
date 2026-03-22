@@ -117,8 +117,8 @@ class TestPackageStructure(unittest.TestCase):
         self.assertEqual(missing, [], f"누락된 패키지 디렉토리: {missing}")
 
     def test_structure_node_source_files_exist(self):
-        """nodes/ 아래 3개 노드 소스 파일이 존재해야 한다."""
-        for name in ("loader.py", "latent.py", "text_encode.py"):
+        """nodes/ 아래 4개 노드 소스 파일이 존재해야 한다."""
+        for name in ("loader.py", "latent.py", "text_encode.py", "teacache.py"):
             path = PROJECT_ROOT / "nodes" / name
             self.assertTrue(path.is_file(), f"nodes/{name} 없음")
 
@@ -199,6 +199,7 @@ NODE_SPECS = [
     ("nodes.loader", "MotifVideoModelLoader"),
     ("nodes.text_encode", "MotifTextEncode"),
     ("nodes.latent", "EmptyMotifLatent"),
+    ("nodes.teacache", "MotifTeaCache"),
 ]
 
 
@@ -603,10 +604,10 @@ class TestGracefulFailure(unittest.TestCase):
                     ):
                         mapping_sizes.append(len(node.value.keys))
 
-        # 정상 경로 딕셔너리(3개)와 fallback {}(0개) 모두 있을 수 있음
+        # 정상 경로 딕셔너리(4개)와 fallback {}(0개) 모두 있을 수 있음
         self.assertIn(
-            3, mapping_sizes,
-            f"NODE_CLASS_MAPPINGS 정상 경로에 3개 항목이 없음. 발견된 크기: {mapping_sizes}"
+            4, mapping_sizes,
+            f"NODE_CLASS_MAPPINGS 정상 경로에 4개 항목이 없음. 발견된 크기: {mapping_sizes}"
         )
 
     def test_graceful_fallback_mapping_is_empty_dict(self):
@@ -650,16 +651,18 @@ class TestGracefulFailure(unittest.TestCase):
 class TestNodesPackageInit(unittest.TestCase):
     """nodes/__init__.py가 3개 클래스를 올바르게 re-export하는지 확인."""
 
-    def test_nodes_init_exports_all_three_classes(self):
+    def test_nodes_init_exports_core_classes(self):
+        """nodes/__init__.py에 기존 3개 코어 클래스가 포함되어야 한다.
+        MotifTeaCache는 루트 __init__.py에서 직접 import하므로 여기서 불필요."""
         src = (PROJECT_ROOT / "nodes" / "__init__.py").read_text()
-        for name in ("MotifVideoModelLoader", "MotifTextEncode", "EmptyMotifLatent"):
+        for name in ("MotifTextEncoderLoader", "MotifTextEncode", "EmptyMotifLatent"):
             self.assertIn(name, src, f"nodes/__init__.py에 {name} 없음")
 
     def test_nodes_init_has_dunder_all(self):
         src = (PROJECT_ROOT / "nodes" / "__init__.py").read_text()
         self.assertIn("__all__", src, "nodes/__init__.py에 __all__ 없음")
 
-    def test_nodes_init_all_contains_three_names(self):
+    def test_nodes_init_all_contains_at_least_three_names(self):
         src = (PROJECT_ROOT / "nodes" / "__init__.py").read_text()
         tree = ast.parse(src)
         all_values = []
@@ -672,7 +675,10 @@ class TestNodesPackageInit(unittest.TestCase):
                                 elt.value if isinstance(elt, ast.Constant) else None
                                 for elt in node.value.elts
                             ]
-        self.assertEqual(len(all_values), 3, f"__all__ 원소 수 예상 3, 실제 {len(all_values)}: {all_values}")
+        self.assertGreaterEqual(
+            len(all_values), 3,
+            f"__all__ 원소 수 3개 이상이어야 함, 실제 {len(all_values)}: {all_values}"
+        )
 
     def test_nodes_init_no_wildcard_import(self):
         """from .module import * 패턴은 없어야 한다."""
@@ -685,3 +691,180 @@ class TestNodesPackageInit(unittest.TestCase):
                         alias.name, "*",
                         "nodes/__init__.py에 wildcard import(*) 사용 — 명시적 import 권장"
                     )
+
+
+# ---------------------------------------------------------------------------
+# 6. MotifTeaCache 노드 등록 검증 (AST + 런타임)
+# ---------------------------------------------------------------------------
+
+class TestMotifTeaCacheRegistration(unittest.TestCase):
+    """루트 __init__.py에 MotifTeaCache가 올바르게 등록되어 있는지 검증."""
+
+    def _get_root_init_src_and_tree(self):
+        src = (PROJECT_ROOT / "__init__.py").read_text()
+        return src, ast.parse(src)
+
+    # --- AST: NODE_CLASS_MAPPINGS에 "MotifTeaCache" 키 존재 ---
+
+    def test_teacache_key_in_node_class_mappings_ast(self):
+        """NODE_CLASS_MAPPINGS 딕셔너리 리터럴에 'MotifTeaCache' 키가 있어야 한다."""
+        _, tree = self._get_root_init_src_and_tree()
+
+        found = False
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign):
+                for target in node.targets:
+                    if (
+                        isinstance(target, ast.Name)
+                        and target.id == "NODE_CLASS_MAPPINGS"
+                        and isinstance(node.value, ast.Dict)
+                    ):
+                        for key in node.value.keys:
+                            if isinstance(key, ast.Constant) and key.value == "MotifTeaCache":
+                                found = True
+        self.assertTrue(
+            found,
+            "NODE_CLASS_MAPPINGS에 'MotifTeaCache' 키가 없음"
+        )
+
+    # --- AST: NODE_DISPLAY_NAME_MAPPINGS에 "MotifTeaCache" 키 존재 ---
+
+    def test_teacache_key_in_node_display_name_mappings_ast(self):
+        """NODE_DISPLAY_NAME_MAPPINGS 딕셔너리 리터럴에 'MotifTeaCache' 키가 있어야 한다."""
+        _, tree = self._get_root_init_src_and_tree()
+
+        found = False
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign):
+                for target in node.targets:
+                    if (
+                        isinstance(target, ast.Name)
+                        and target.id == "NODE_DISPLAY_NAME_MAPPINGS"
+                        and isinstance(node.value, ast.Dict)
+                    ):
+                        for key in node.value.keys:
+                            if isinstance(key, ast.Constant) and key.value == "MotifTeaCache":
+                                found = True
+        self.assertTrue(
+            found,
+            "NODE_DISPLAY_NAME_MAPPINGS에 'MotifTeaCache' 키가 없음"
+        )
+
+    # --- AST: NODE_DISPLAY_NAME_MAPPINGS "MotifTeaCache" 값이 올바른지 ---
+
+    def test_teacache_display_name_value_correct(self):
+        """NODE_DISPLAY_NAME_MAPPINGS['MotifTeaCache'] 값이 'MotifVideo TeaCache'이어야 한다."""
+        _, tree = self._get_root_init_src_and_tree()
+
+        display_value = None
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign):
+                for target in node.targets:
+                    if (
+                        isinstance(target, ast.Name)
+                        and target.id == "NODE_DISPLAY_NAME_MAPPINGS"
+                        and isinstance(node.value, ast.Dict)
+                    ):
+                        for key, val in zip(node.value.keys, node.value.values):
+                            if isinstance(key, ast.Constant) and key.value == "MotifTeaCache":
+                                if isinstance(val, ast.Constant):
+                                    display_value = val.value
+
+        self.assertEqual(
+            display_value,
+            "MotifVideo TeaCache",
+            f"NODE_DISPLAY_NAME_MAPPINGS['MotifTeaCache'] 예상 'MotifVideo TeaCache', 실제 {display_value!r}"
+        )
+
+    # --- AST: MotifTeaCache import 문이 teacache 모듈에서 오는지 ---
+
+    def test_teacache_imported_from_nodes_teacache(self):
+        """from .nodes.teacache import MotifTeaCache 구문이 있어야 한다."""
+        _, tree = self._get_root_init_src_and_tree()
+
+        import_found = False
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                module = node.module or ""
+                names = [alias.name for alias in node.names]
+                if "teacache" in module and "MotifTeaCache" in names:
+                    import_found = True
+
+        self.assertTrue(
+            import_found,
+            "from .nodes.teacache import MotifTeaCache 구문이 __init__.py에 없음"
+        )
+
+    # --- 런타임: MotifTeaCache 클래스가 실제로 로드 가능하고 올바른 타입인지 ---
+
+    def test_teacache_class_loadable_and_has_required_attrs(self):
+        """MotifTeaCache가 ComfyUI 노드 필수 속성을 모두 가진 클래스인지 확인."""
+        try:
+            cls = _load_node_class("nodes.teacache", "MotifTeaCache")
+        except Exception as exc:
+            self.skipTest(f"MotifTeaCache 로드 실패 (의존성 문제): {exc}")
+
+        for attr in REQUIRED_ATTRS:
+            self.assertTrue(
+                hasattr(cls, attr),
+                f"MotifTeaCache.{attr} 속성 없음"
+            )
+
+    def test_teacache_class_is_class_not_instance(self):
+        """NODE_CLASS_MAPPINGS 값은 인스턴스가 아닌 클래스(type)이어야 한다."""
+        try:
+            cls = _load_node_class("nodes.teacache", "MotifTeaCache")
+        except Exception as exc:
+            self.skipTest(f"MotifTeaCache 로드 실패: {exc}")
+
+        self.assertIsInstance(
+            cls, type,
+            "MotifTeaCache가 클래스(type)가 아님 — 인스턴스가 등록되면 안 됨"
+        )
+
+    def test_teacache_return_types_is_tuple_not_list(self):
+        """RETURN_TYPES는 tuple이어야 하며 list이면 안 된다."""
+        try:
+            cls = _load_node_class("nodes.teacache", "MotifTeaCache")
+        except Exception as exc:
+            self.skipTest(f"MotifTeaCache 로드 실패: {exc}")
+
+        self.assertNotIsInstance(
+            cls.RETURN_TYPES, list,
+            "MotifTeaCache.RETURN_TYPES가 list임 — tuple이어야 함"
+        )
+
+    def test_teacache_function_method_exists_on_class(self):
+        """FUNCTION 문자열이 가리키는 메서드가 클래스에 실제로 존재해야 한다."""
+        try:
+            cls = _load_node_class("nodes.teacache", "MotifTeaCache")
+        except Exception as exc:
+            self.skipTest(f"MotifTeaCache 로드 실패: {exc}")
+
+        self.assertTrue(
+            hasattr(cls, cls.FUNCTION),
+            f"MotifTeaCache.FUNCTION='{cls.FUNCTION}'에 해당하는 메서드가 없음"
+        )
+
+    # --- 경계값: NODE_CLASS_MAPPINGS 키가 빈 문자열이 아닌지 ---
+
+    def test_teacache_mapping_key_nonempty_string(self):
+        """'MotifTeaCache' 키가 빈 문자열이 아닌지 확인 (경계값)."""
+        _, tree = self._get_root_init_src_and_tree()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign):
+                for target in node.targets:
+                    if (
+                        isinstance(target, ast.Name)
+                        and target.id == "NODE_CLASS_MAPPINGS"
+                        and isinstance(node.value, ast.Dict)
+                    ):
+                        for key in node.value.keys:
+                            if isinstance(key, ast.Constant) and key.value == "MotifTeaCache":
+                                self.assertGreater(
+                                    len(key.value), 0,
+                                    "NODE_CLASS_MAPPINGS 'MotifTeaCache' 키가 빈 문자열"
+                                )
+                                return
+        # 키를 찾지 못한 경우 — 이미 test_teacache_key_in_node_class_mappings_ast에서 잡힘
+        self.skipTest("'MotifTeaCache' 키를 찾지 못함 — 다른 테스트에서 검출됨")

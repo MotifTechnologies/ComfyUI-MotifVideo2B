@@ -45,6 +45,9 @@ try:
             num_single_layers = 0
             while '{}single_transformer_blocks.{}.attn.to_k.weight'.format(key_prefix, num_single_layers) in state_dict:
                 num_single_layers += 1
+            # Decoder reuses last N single_transformer_blocks (no separate keys).
+            # Must match training config. Both base and cross_attn configs use 8.
+            num_decoder_layers = 8
 
             # in_channels from x_embedder
             x_embed_w = state_dict['{}x_embedder.proj.weight'.format(key_prefix)]
@@ -63,12 +66,15 @@ try:
                 "attention_head_dim": attention_head_dim,
                 "num_layers": num_layers,
                 "num_single_layers": num_single_layers,
-                "num_decoder_layers": 0,  # detected dynamically, 0 if absent
+                "num_decoder_layers": num_decoder_layers,
                 "text_embed_dim": text_embed_dim,
                 "image_embed_dim": image_embed_dim,
                 "patch_size": patch_size,
                 "patch_size_t": 1,
                 "rope_axes_dim": [16, 56, 56],
+                "rope_theta": 10000.0,
+                "cross_attention_dual": False,
+                "cross_attention_single": False,
             }
 
         # Not a MotifVideo model — fall through to original detection logic.
@@ -83,17 +89,20 @@ try:
     from .nodes.loader import MotifTextEncoderLoader
     from .nodes.text_encode import MotifTextEncode
     from .nodes.latent import EmptyMotifLatent
+    from .nodes.vae_loader import MotifVAELoader
 
     NODE_CLASS_MAPPINGS = {
         "MotifTextEncoderLoader": MotifTextEncoderLoader,
         "MotifTextEncode": MotifTextEncode,
         "EmptyMotifLatent": EmptyMotifLatent,
+        "MotifVAELoader": MotifVAELoader,
     }
 
     NODE_DISPLAY_NAME_MAPPINGS = {
         "MotifTextEncoderLoader": "Load MotifVideo Text Encoder",
         "MotifTextEncode": "MotifVideo Text Encode",
         "EmptyMotifLatent": "Empty MotifVideo Latent",
+        "MotifVAELoader": "Load MotifVideo VAE",
     }
 
 except Exception as e:

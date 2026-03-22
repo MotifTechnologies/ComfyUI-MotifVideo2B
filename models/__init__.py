@@ -10,6 +10,11 @@ MotifVideoModel subclasses comfy.model_base.BaseModel and overrides:
 The actual MotifVideoTransformer3DModel is imported from motif_core (no code
 copy). sys.path is extended in the package __init__.py before this module is
 imported, so the import below always succeeds at runtime.
+
+The transformer is set directly as self.diffusion_model (NOT wrapped in an
+adapter nn.Module) so that state_dict keys match the checkpoint without a
+spurious 'transformer.' prefix. The ComfyUI calling convention is handled
+by monkey-patching the transformer's forward method.
 """
 
 import torch
@@ -24,11 +29,46 @@ from .adapter import MotifVideoModelAdapter
 from .latent_format import MotifVideoLatent
 
 
+def _make_comfyui_forward(original_forward):
+    """Create a ComfyUI-compatible forward that delegates to the transformer.
+
+    ComfyUI calls: diffusion_model(x, timestep, context=..., control=...,
+                                    transformer_options=..., **extra_conds)
+    Transformer expects: forward(hidden_states, timestep,
+                                  encoder_hidden_states, ...)
+    """
+    def comfyui_forward(
+        x,
+        timestep,
+        context=None,
+        control=None,
+        transformer_options=None,
+        encoder_attention_mask=None,
+        pooled_projections=None,
+        image_embeds=None,
+        **kwargs,
+    ):
+        output = original_forward(
+            hidden_states=x,
+            timestep=timestep,
+            encoder_hidden_states=context,
+            encoder_attention_mask=encoder_attention_mask,
+            pooled_projections=pooled_projections,
+            image_embeds=image_embeds,
+            return_dict=False,
+        )
+        # forward() returns (sample,) when return_dict=False
+        return output[0]
+    return comfyui_forward
+
+
 class MotifVideoModel(comfy.model_base.BaseModel):
     """ComfyUI BaseModel wrapper for MotifVideo 1.9B.
 
-    The diffusion_model stored on this instance is a
-    ``MotifVideoModelAdapter`` wrapping a ``MotifVideoTransformer3DModel``.
+    The diffusion_model is the MotifVideoTransformer3DModel directly (no
+    adapter wrapper) so that checkpoint state_dict keys match without a
+    'transformer.' prefix. The forward method is monkey-patched to translate
+    ComfyUI's calling convention.
 
     in_channels breakdown (33 total):
       16  — noised latent  (xc, managed by BaseModel._apply_model)
@@ -43,7 +83,7 @@ class MotifVideoModel(comfy.model_base.BaseModel):
         device=None,
     ):
         # Disable ComfyUI's default UNetModel instantiation — we create the
-        # transformer and wrap it ourselves below.
+        # transformer ourselves below.
         unet_config_override = dict(model_config.unet_config)
         unet_config_override["disable_unet_model_creation"] = True
 
@@ -54,8 +94,7 @@ class MotifVideoModel(comfy.model_base.BaseModel):
         super().__init__(model_config, model_type, device=device)
         model_config.unet_config = original_unet_config  # restore
 
-        # self.diffusion_model is not set yet — create transformer + adapter.
-        # Filter unet_config to only valid MotifVideoTransformer3DModel constructor params.
+        # Filter unet_config to only valid MotifVideoTransformer3DModel params.
         _TRANSFORMER_PARAMS = {
             "in_channels", "out_channels", "num_attention_heads", "attention_head_dim",
             "num_layers", "num_single_layers", "num_decoder_layers", "mlp_ratio",
@@ -72,7 +111,14 @@ class MotifVideoModel(comfy.model_base.BaseModel):
         # Cast to bfloat16 to match checkpoint weights — avoids dtype mismatch
         # when ComfyUI force-loads bfloat16 weights but biases stay float32.
         transformer = transformer.to(dtype=torch.bfloat16)
-        self.diffusion_model = MotifVideoModelAdapter(transformer)
+
+        # Monkey-patch forward to translate ComfyUI calling convention.
+        # The transformer is set directly as diffusion_model (not wrapped in
+        # an adapter nn.Module) so state_dict keys match the checkpoint.
+        original_forward = transformer.forward
+        transformer.forward = _make_comfyui_forward(original_forward)
+
+        self.diffusion_model = transformer
         self.diffusion_model.eval()
 
     # ------------------------------------------------------------------
@@ -163,4 +209,5 @@ class MotifVideoModel(comfy.model_base.BaseModel):
         return out
 
 
-__all__ = ["MotifVideoModel", "MotifVideoModelAdapter", "MotifVideoLatent"]
+__all__ = ["MotifVideoModel", "MotifVideoModelAdapter", "MotifVideoLatent",
+           "_make_comfyui_forward"]

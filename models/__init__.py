@@ -69,6 +69,9 @@ class MotifVideoModel(comfy.model_base.BaseModel):
             if k in _TRANSFORMER_PARAMS
         }
         transformer = MotifVideoTransformer3DModel(**transformer_kwargs)
+        # Cast to bfloat16 to match checkpoint weights — avoids dtype mismatch
+        # when ComfyUI force-loads bfloat16 weights but biases stay float32.
+        transformer = transformer.to(dtype=torch.bfloat16)
         self.diffusion_model = MotifVideoModelAdapter(transformer)
         self.diffusion_model.eval()
 

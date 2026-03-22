@@ -353,21 +353,27 @@ class TestApplyTeaCacheDisabled:
 # ===========================================================================
 
 def _make_full_mock_model():
-    """Build a minimal mock hierarchy: ModelPatcher → inner_model → adapter → transformer."""
-    # Transformer with one block
+    """Build a minimal mock hierarchy: ModelPatcher → inner_model → transformer.
+
+    diffusion_model IS the transformer directly (MotifVideoTransformer3DModel).
+    There is no intermediate adapter wrapper.
+
+    Returns:
+        (model, patched_model, inner_model, transformer, transformer)
+        The 4th and 5th elements are the same object (transformer = diffusion_model).
+        This matches the return signature callers unpack as:
+            model, patched_model, inner_model, transformer, _ = _make_full_mock_model()
+    """
+    # Transformer with one block — diffusion_model IS this transformer
     block0 = MagicMock(name="block0")
     transformer = MagicMock(name="transformer")
     transformer.transformer_blocks = [block0]
-
-    adapter = MagicMock(name="adapter")
-    adapter.transformer = transformer
-    del adapter._teacache_enabled  # ensure attribute missing (fresh mock)
-    adapter._teacache_enabled = False
-    # Remove the attribute so getattr returns False (not mock object)
-    type(adapter)._teacache_enabled = False  # ensure bool, not Mock
+    transformer._teacache_enabled = False
+    # Ensure getattr returns a real bool, not a Mock object
+    type(transformer)._teacache_enabled = False
 
     inner_model = MagicMock(name="inner_model")
-    inner_model.diffusion_model = adapter
+    inner_model.diffusion_model = transformer  # diffusion_model IS transformer
 
     patched_model = MagicMock(name="patched_model")
     patched_model.model = inner_model
@@ -375,7 +381,9 @@ def _make_full_mock_model():
     model = MagicMock(name="model")
     model.clone.return_value = patched_model
 
-    return model, patched_model, inner_model, adapter, transformer
+    # Return transformer twice so callers unpacking (model, patched_model, inner_model, X, Y)
+    # get transformer for both X and Y (they are the same object).
+    return model, patched_model, inner_model, transformer, transformer
 
 
 class TestApplyTeaCacheEnabled:
@@ -395,40 +403,38 @@ class TestApplyTeaCacheEnabled:
 
     def test_adapter_forward_is_replaced(self):
         node = MotifTeaCache()
-        model, patched_model, inner_model, adapter, transformer = _make_full_mock_model()
-        original_forward = adapter.forward
+        model, patched_model, inner_model, transformer, _ = _make_full_mock_model()
+        original_forward = transformer.forward
         node.apply_teacache(model=model, rel_l1_thresh=0.3, enable=True)
-        assert adapter.forward is not original_forward, "adapter.forward must be replaced"
+        assert transformer.forward is not original_forward, "transformer.forward must be replaced"
 
     def test_adapter_marked_as_enabled(self):
         node = MotifTeaCache()
-        model, patched_model, inner_model, adapter, transformer = _make_full_mock_model()
+        model, patched_model, inner_model, transformer, _ = _make_full_mock_model()
         node.apply_teacache(model=model, rel_l1_thresh=0.3, enable=True)
-        assert adapter._teacache_enabled is True
+        assert transformer._teacache_enabled is True
 
     def test_state_attached_to_adapter(self):
         node = MotifTeaCache()
-        model, patched_model, inner_model, adapter, transformer = _make_full_mock_model()
+        model, patched_model, inner_model, transformer, _ = _make_full_mock_model()
         node.apply_teacache(model=model, rel_l1_thresh=0.3, enable=True)
-        assert hasattr(adapter, "_teacache_state")
-        assert isinstance(adapter._teacache_state, _TeaCacheState)
+        assert hasattr(transformer, "_teacache_state")
+        assert isinstance(transformer._teacache_state, _TeaCacheState)
 
     def test_state_threshold_matches_input(self):
         node = MotifTeaCache()
-        model, patched_model, inner_model, adapter, transformer = _make_full_mock_model()
+        model, patched_model, inner_model, transformer, _ = _make_full_mock_model()
         node.apply_teacache(model=model, rel_l1_thresh=0.42, enable=True)
-        assert adapter._teacache_state.rel_l1_thresh == 0.42
+        assert transformer._teacache_state.rel_l1_thresh == 0.42
 
-    def test_no_adapter_transformer_returns_patched_without_patch(self):
-        """If adapter has no .transformer, return patched_model without patching."""
+    def test_no_transformer_blocks_returns_patched_without_patch(self):
+        """If diffusion_model has no transformer_blocks, return patched_model without patching."""
         node = MotifTeaCache()
-        block0 = MagicMock()
-        transformer = MagicMock()
-        transformer.transformer_blocks = [block0]
 
-        adapter = MagicMock(spec=[])  # spec=[] means no attributes by default
+        # diffusion_model is a MagicMock with spec=[] so hasattr(x, 'transformer_blocks') is False
+        diffusion_model = MagicMock(spec=[])
         inner_model = MagicMock()
-        inner_model.diffusion_model = adapter
+        inner_model.diffusion_model = diffusion_model
 
         patched_model = MagicMock()
         patched_model.model = inner_model
@@ -438,21 +444,18 @@ class TestApplyTeaCacheEnabled:
 
         result = node.apply_teacache(model=model, rel_l1_thresh=0.3, enable=True)
         assert result[0] is patched_model
-        # forward should not be reassigned (adapter has no .forward in spec=[])
 
     def test_empty_transformer_blocks_returns_patched_without_patch(self):
         """If transformer_blocks is empty, return patched_model without patching."""
         node = MotifTeaCache()
 
+        # diffusion_model IS the transformer; give it empty transformer_blocks
         transformer = MagicMock()
         transformer.transformer_blocks = []  # empty!
-
-        adapter = MagicMock()
-        adapter.transformer = transformer
-        adapter._teacache_enabled = False
+        transformer._teacache_enabled = False
 
         inner_model = MagicMock()
-        inner_model.diffusion_model = adapter
+        inner_model.diffusion_model = transformer  # no adapter wrapper
 
         patched_model = MagicMock()
         patched_model.model = inner_model
@@ -464,16 +467,15 @@ class TestApplyTeaCacheEnabled:
         assert result[0] is patched_model
 
     def test_idempotency_skips_repatch_when_already_enabled(self):
-        """Calling apply_teacache twice on already-patched adapter must not re-patch."""
+        """Calling apply_teacache twice on already-patched transformer must not re-patch."""
         node = MotifTeaCache()
-        model, patched_model, inner_model, adapter, transformer = _make_full_mock_model()
+        model, patched_model, inner_model, transformer, _ = _make_full_mock_model()
 
-        # First call — patches adapter
+        # First call — patches transformer
         node.apply_teacache(model=model, rel_l1_thresh=0.3, enable=True)
-        forward_after_first = adapter.forward
+        forward_after_first = transformer.forward
 
-        # Simulate second call on a model that already has _teacache_enabled=True
-        # We need a fresh clone chain pointing to the same already-patched adapter
+        # Simulate second call on a model whose clone resolves to the same transformer
         patched_model2 = MagicMock(name="patched_model2")
         patched_model2.model = inner_model
         model2 = MagicMock(name="model2")
@@ -482,14 +484,14 @@ class TestApplyTeaCacheEnabled:
         node.apply_teacache(model=model2, rel_l1_thresh=0.5, enable=True)
 
         # forward must not have been replaced a second time
-        assert adapter.forward is forward_after_first, (
+        assert transformer.forward is forward_after_first, (
             "Idempotency guard: forward must not be replaced on second apply_teacache call"
         )
 
     def test_idempotency_updates_threshold(self):
         """When already patched, threshold update is applied to existing state."""
         node = MotifTeaCache()
-        model, patched_model, inner_model, adapter, transformer = _make_full_mock_model()
+        model, patched_model, inner_model, transformer, _ = _make_full_mock_model()
         node.apply_teacache(model=model, rel_l1_thresh=0.3, enable=True)
 
         patched_model2 = MagicMock()
@@ -498,7 +500,7 @@ class TestApplyTeaCacheEnabled:
         model2.clone.return_value = patched_model2
 
         node.apply_teacache(model=model2, rel_l1_thresh=0.99, enable=True)
-        assert adapter._teacache_state.rel_l1_thresh == 0.99
+        assert transformer._teacache_state.rel_l1_thresh == 0.99
 
 
 # ===========================================================================
@@ -910,22 +912,206 @@ class TestNodeLoadingReturnContract:
         model.clone.assert_called_once()
 
     def test_adapter_forward_is_callable_after_patch(self):
-        """After apply_teacache, adapter.forward must be a callable (not a Mock)."""
+        """After apply_teacache, transformer.forward must be a callable (not a Mock)."""
         node = MotifTeaCache()
-        model, patched_model, inner_model, adapter, transformer = _make_full_mock_model()
+        model, patched_model, inner_model, transformer, _ = _make_full_mock_model()
         node.apply_teacache(model=model, rel_l1_thresh=0.3, enable=True)
-        assert callable(adapter.forward), "patched adapter.forward must be callable"
+        assert callable(transformer.forward), "patched transformer.forward must be callable"
 
     def test_adapter_forward_is_plain_function_not_mock(self):
         """The patched forward must be the teacache closure, not a MagicMock."""
         import inspect
         node = MotifTeaCache()
-        model, patched_model, inner_model, adapter, transformer = _make_full_mock_model()
+        model, patched_model, inner_model, transformer, _ = _make_full_mock_model()
         node.apply_teacache(model=model, rel_l1_thresh=0.3, enable=True)
         # A real function (closure) is not an instance of MagicMock
-        assert not isinstance(adapter.forward, MagicMock), (
-            "adapter.forward must be replaced with a real closure, not a MagicMock"
+        assert not isinstance(transformer.forward, MagicMock), (
+            "transformer.forward must be replaced with a real closure, not a MagicMock"
         )
+
+
+# ===========================================================================
+# 10. _compute_sampling_progress
+# ===========================================================================
+
+_compute_sampling_progress = _teacache_mod._compute_sampling_progress
+
+
+class TestComputeSamplingProgress:
+    """_compute_sampling_progress converts sigma → progress in [0, 1]."""
+
+    def test_sigma_1_gives_progress_0(self):
+        """sigma=1.0 (start of sampling) → progress=0.0."""
+        ts = torch.tensor([1.0])
+        assert _compute_sampling_progress(ts) == pytest.approx(0.0)
+
+    def test_sigma_0_gives_progress_1(self):
+        """sigma=0.0 (end of sampling) → progress=1.0."""
+        ts = torch.tensor([0.0])
+        assert _compute_sampling_progress(ts) == pytest.approx(1.0)
+
+    def test_sigma_0_5_gives_progress_0_5(self):
+        """sigma=0.5 → progress=0.5."""
+        ts = torch.tensor([0.5])
+        assert _compute_sampling_progress(ts) == pytest.approx(0.5)
+
+    def test_result_clamped_above_0(self):
+        """sigma > 1.0 → clamped to 0.0."""
+        ts = torch.tensor([1.5])
+        assert _compute_sampling_progress(ts) == pytest.approx(0.0)
+
+    def test_result_clamped_below_1(self):
+        """sigma < 0.0 → clamped to 1.0."""
+        ts = torch.tensor([-0.1])
+        assert _compute_sampling_progress(ts) == pytest.approx(1.0)
+
+    def test_uses_first_element_of_batch(self):
+        """Batch tensor: only first element is used."""
+        ts = torch.tensor([0.3, 0.9])  # progress from first = 1 - 0.3 = 0.7
+        assert _compute_sampling_progress(ts) == pytest.approx(0.7)
+
+    def test_multidim_tensor(self):
+        """2D tensor: progress computed from first element after flatten."""
+        ts = torch.tensor([[0.2]])
+        assert _compute_sampling_progress(ts) == pytest.approx(0.8)
+
+
+# ===========================================================================
+# 11. start/end range filtering in teacache_forward
+# ===========================================================================
+
+class TestTeacacheForwardStartEnd:
+    """teacache_forward bypasses caching when progress is outside [start, end)."""
+
+    def _make_components_with_range(self, start: float, end: float, thresh: float = 1e9):
+        """Like _make_components in TestMakeTeacacheForward but with start/end."""
+        B, C, T, H, W = 1, 4, 2, 4, 4
+        x = torch.ones(B, C, T, H, W)
+
+        call_log = []
+
+        def original_fwd(x_in, timestep, **kw):
+            call_log.append("called")
+            return x_in + 1.0
+
+        norm_out = torch.ones(1, 16, 8)  # non-zero to avoid degenerate guard
+        block0 = MagicMock(name="block0")
+        block0.norm1.return_value = (norm_out, MagicMock(), MagicMock(), MagicMock(), MagicMock())
+
+        transformer = MagicMock(name="transformer")
+        transformer.transformer_blocks = [block0]
+        transformer.time_text_embed.return_value = (torch.zeros(B, 64), MagicMock())
+        transformer.x_embedder.return_value = torch.zeros(B, 16, 8)
+
+        state = _TeaCacheState(
+            rel_l1_thresh=thresh,
+            poly_coeffs=_MOTIF_POLY_COEFFS,
+            start=start,
+            end=end,
+        )
+        forward = _make_teacache_forward(original_fwd, transformer, state)
+        return forward, state, x, call_log
+
+    def test_out_of_range_before_start_calls_original_forward(self):
+        """progress < start → original forward called, no cache update."""
+        # sigma=0.8 → progress=0.2; start=0.5 → out of range
+        forward, state, x, call_log = self._make_components_with_range(start=0.5, end=1.0)
+        forward(x, timestep=torch.tensor([0.8]))
+        assert len(call_log) == 1, "original forward must be called when out of range"
+
+    def test_out_of_range_before_start_no_modulated_input_stored(self):
+        """progress < start → previous_modulated_input stays None."""
+        forward, state, x, call_log = self._make_components_with_range(start=0.5, end=1.0)
+        forward(x, timestep=torch.tensor([0.8]))
+        assert state.previous_modulated_input is None
+
+    def test_out_of_range_before_start_step_counter_increments(self):
+        """Even when out of range, step_counter increments."""
+        forward, state, x, call_log = self._make_components_with_range(start=0.5, end=1.0)
+        assert state.step_counter == 0
+        forward(x, timestep=torch.tensor([0.8]))
+        assert state.step_counter == 1
+
+    def test_in_range_populates_cache(self):
+        """progress in [start, end) → modulated input is stored after compute."""
+        # sigma=0.4 → progress=0.6; range [0.5, 1.0) → in range
+        forward, state, x, call_log = self._make_components_with_range(start=0.5, end=1.0)
+        forward(x, timestep=torch.tensor([0.4]))
+        assert state.previous_modulated_input is not None
+
+    def test_out_of_range_after_end_calls_original_forward(self):
+        """progress >= end → original forward called, no cache update."""
+        # sigma=0.05 → progress=0.95; end=0.9 → out of range
+        forward, state, x, call_log = self._make_components_with_range(start=0.0, end=0.9)
+        forward(x, timestep=torch.tensor([0.05]))
+        assert len(call_log) == 1
+
+    def test_out_of_range_after_end_no_modulated_input_stored(self):
+        """progress >= end → previous_modulated_input stays None."""
+        forward, state, x, call_log = self._make_components_with_range(start=0.0, end=0.9)
+        forward(x, timestep=torch.tensor([0.05]))
+        assert state.previous_modulated_input is None
+
+    def test_default_range_full_pass(self):
+        """start=0.0, end=1.0 → all sigma values in range (original behavior)."""
+        # sigma=0.5 → progress=0.5; range [0.0, 1.0) → in range
+        forward, state, x, call_log = self._make_components_with_range(start=0.0, end=1.0)
+        forward(x, timestep=torch.tensor([0.5]))
+        # In-range → cache update should happen
+        assert state.previous_modulated_input is not None
+
+    def test_end_boundary_exclusive(self):
+        """progress == end is out of range (exclusive upper bound)."""
+        # sigma=0.0 → progress=1.0; end=1.0 → exactly at boundary (exclusive)
+        forward, state, x, call_log = self._make_components_with_range(start=0.0, end=1.0)
+        forward(x, timestep=torch.tensor([0.0]))
+        # progress=1.0 is not < 1.0, so out-of-range path taken
+        # However, sigma=0.0 is clamped: progress = clamp(1-0, 0, 1) = 1.0
+        # 1.0 < 1.0 is False → out of range
+        assert state.previous_modulated_input is None
+
+    def test_start_end_state_stored_correctly(self):
+        """_TeaCacheState stores start and end correctly."""
+        state = _TeaCacheState(
+            rel_l1_thresh=0.3,
+            poly_coeffs=_MOTIF_POLY_COEFFS,
+            start=0.2,
+            end=0.8,
+        )
+        assert state.start == pytest.approx(0.2)
+        assert state.end == pytest.approx(0.8)
+
+    def test_apply_teacache_stores_start_end_in_state(self):
+        """apply_teacache with start/end passes them to _TeaCacheState."""
+        node = MotifTeaCache()
+        model, patched_model, inner_model, transformer, _ = _make_full_mock_model()
+        node.apply_teacache(model=model, rel_l1_thresh=0.3, enable=True, start=0.1, end=0.9)
+        assert transformer._teacache_state.start == pytest.approx(0.1)
+        assert transformer._teacache_state.end == pytest.approx(0.9)
+
+    def test_input_types_contains_start(self):
+        required = MotifTeaCache.INPUT_TYPES()["required"]
+        assert "start" in required
+
+    def test_input_types_contains_end(self):
+        required = MotifTeaCache.INPUT_TYPES()["required"]
+        assert "end" in required
+
+    def test_start_default_is_0(self):
+        meta = MotifTeaCache.INPUT_TYPES()["required"]["start"][1]
+        assert meta["default"] == 0.0
+
+    def test_end_default_is_1(self):
+        meta = MotifTeaCache.INPUT_TYPES()["required"]["end"][1]
+        assert meta["default"] == 1.0
+
+    def test_start_type_is_float(self):
+        field = MotifTeaCache.INPUT_TYPES()["required"]["start"]
+        assert field[0] == "FLOAT"
+
+    def test_end_type_is_float(self):
+        field = MotifTeaCache.INPUT_TYPES()["required"]["end"]
+        assert field[0] == "FLOAT"
 
 
 # ===========================================================================
@@ -936,7 +1122,10 @@ class TestMonkeyPatchDisable:
     """enable=False must leave adapter.forward completely untouched."""
 
     def _make_model_with_trackable_forward(self):
-        """Return model hierarchy where adapter.forward is a real sentinel callable."""
+        """Return model hierarchy where transformer.forward is a real sentinel callable.
+
+        diffusion_model IS the transformer directly (no adapter wrapper).
+        """
         sentinel_forward_calls = []
 
         def sentinel_forward(*args, **kwargs):
@@ -946,14 +1135,11 @@ class TestMonkeyPatchDisable:
         block0 = MagicMock()
         transformer = MagicMock()
         transformer.transformer_blocks = [block0]
-
-        adapter = MagicMock()
-        adapter.transformer = transformer
-        adapter.forward = sentinel_forward  # real callable, not a Mock method
-        adapter._teacache_enabled = False
+        transformer.forward = sentinel_forward  # real callable, not a Mock method
+        transformer._teacache_enabled = False
 
         inner_model = MagicMock()
-        inner_model.diffusion_model = adapter
+        inner_model.diffusion_model = transformer  # diffusion_model IS transformer
 
         patched_model = MagicMock()
         patched_model.model = inner_model
@@ -961,28 +1147,28 @@ class TestMonkeyPatchDisable:
         model = MagicMock()
         model.clone.return_value = patched_model
 
-        return model, adapter, sentinel_forward, sentinel_forward_calls
+        return model, transformer, sentinel_forward, sentinel_forward_calls
 
     def test_adapter_forward_not_replaced_when_disabled(self):
         node = MotifTeaCache()
-        model, adapter, sentinel_forward, _ = self._make_model_with_trackable_forward()
+        model, transformer, sentinel_forward, _ = self._make_model_with_trackable_forward()
         node.apply_teacache(model=model, rel_l1_thresh=0.3, enable=False)
-        # adapter.forward is never accessed because enable=False returns early
-        # (model.clone() not called, so adapter is unreachable — just verify model identity)
+        # transformer.forward is never accessed because enable=False returns early
+        # (model.clone() not called, so transformer is unreachable — just verify model identity)
         result = node.apply_teacache(model=model, rel_l1_thresh=0.3, enable=False)
         assert result[0] is model
 
     def test_teacache_enabled_flag_not_set_when_disabled(self):
-        """When enable=False, adapter._teacache_enabled must remain False."""
+        """When enable=False, transformer._teacache_enabled must remain False."""
         node = MotifTeaCache()
-        model, adapter, _, _ = self._make_model_with_trackable_forward()
+        model, transformer, _, _ = self._make_model_with_trackable_forward()
         node.apply_teacache(model=model, rel_l1_thresh=0.3, enable=False)
-        # adapter is unreachable via the disabled path, but original model is returned
-        # Verify that no teacache state leaked onto the adapter
-        assert adapter._teacache_enabled is False
+        # transformer is unreachable via the disabled path, but original model is returned
+        # Verify that no teacache state leaked onto the transformer
+        assert transformer._teacache_enabled is False
 
     def test_teacache_state_not_attached_when_disabled(self):
-        """When enable=False, adapter must not have a real _TeaCacheState attached.
+        """When enable=False, transformer must not have a real _TeaCacheState attached.
 
         MagicMock auto-creates attributes on access so we cannot use hasattr.
         Instead verify that _teacache_state (if it exists on the Mock) is NOT
@@ -990,13 +1176,13 @@ class TestMonkeyPatchDisable:
         path that creates a real state object.
         """
         node = MotifTeaCache()
-        model, adapter, _, _ = self._make_model_with_trackable_forward()
+        model, transformer, _, _ = self._make_model_with_trackable_forward()
         node.apply_teacache(model=model, rel_l1_thresh=0.3, enable=False)
         # If _teacache_state was attached by the patch path it would be a real
         # _TeaCacheState; a MagicMock auto-attribute is just another Mock.
-        state_attr = object.__getattribute__(adapter, "_mock_children").get("_teacache_state")
+        state_attr = object.__getattribute__(transformer, "_mock_children").get("_teacache_state")
         assert state_attr is None or not isinstance(state_attr, _TeaCacheState), (
-            "enable=False must not attach a real _TeaCacheState to the adapter"
+            "enable=False must not attach a real _TeaCacheState to the transformer"
         )
 
 
@@ -1009,15 +1195,13 @@ class TestFallbackNoTransformerBlocks:
     and _teacache_enabled must not be set to True."""
 
     def _make_model_empty_blocks(self):
+        """diffusion_model IS the transformer; it has empty transformer_blocks."""
         transformer = MagicMock()
         transformer.transformer_blocks = []
-
-        adapter = MagicMock()
-        adapter.transformer = transformer
-        adapter._teacache_enabled = False
+        transformer._teacache_enabled = False
 
         inner_model = MagicMock()
-        inner_model.diffusion_model = adapter
+        inner_model.diffusion_model = transformer  # no adapter wrapper
 
         patched_model = MagicMock()
         patched_model.model = inner_model
@@ -1025,41 +1209,42 @@ class TestFallbackNoTransformerBlocks:
         model = MagicMock()
         model.clone.return_value = patched_model
 
-        return model, patched_model, adapter
+        return model, patched_model, transformer
 
     def test_enabled_flag_not_set_on_empty_blocks(self):
         node = MotifTeaCache()
-        model, patched_model, adapter = self._make_model_empty_blocks()
+        model, patched_model, transformer = self._make_model_empty_blocks()
         node.apply_teacache(model=model, rel_l1_thresh=0.3, enable=True)
-        assert adapter._teacache_enabled is False, (
-            "adapter._teacache_enabled must remain False when transformer_blocks is empty"
+        assert transformer._teacache_enabled is False, (
+            "transformer._teacache_enabled must remain False when transformer_blocks is empty"
         )
 
     def test_state_not_attached_on_empty_blocks(self):
         node = MotifTeaCache()
-        model, patched_model, adapter = self._make_model_empty_blocks()
+        model, patched_model, transformer = self._make_model_empty_blocks()
         # Remove _teacache_state if it happened to exist on the Mock
-        if hasattr(adapter, "_teacache_state"):
-            del adapter._teacache_state
+        if hasattr(transformer, "_teacache_state"):
+            del transformer._teacache_state
         node.apply_teacache(model=model, rel_l1_thresh=0.3, enable=True)
-        assert not hasattr(adapter, "_teacache_state"), (
+        assert not hasattr(transformer, "_teacache_state"), (
             "No _teacache_state must be attached when transformer_blocks is empty"
         )
 
     def test_returns_patched_model_not_original_on_empty_blocks(self):
         """Even on fallback, the cloned patched_model (not original) is returned."""
         node = MotifTeaCache()
-        model, patched_model, adapter = self._make_model_empty_blocks()
+        model, patched_model, transformer = self._make_model_empty_blocks()
         result = node.apply_teacache(model=model, rel_l1_thresh=0.3, enable=True)
         assert result[0] is patched_model
         assert result[0] is not model
 
-    def _make_model_no_transformer_attr(self):
-        """Adapter with no .transformer attribute at all."""
-        adapter = MagicMock(spec=[])  # no attributes
+    def _make_model_no_transformer_blocks_attr(self):
+        """diffusion_model has no transformer_blocks attribute at all."""
+        # spec=[] means no attributes by default → hasattr returns False
+        diffusion_model = MagicMock(spec=[])
 
         inner_model = MagicMock()
-        inner_model.diffusion_model = adapter
+        inner_model.diffusion_model = diffusion_model
 
         patched_model = MagicMock()
         patched_model.model = inner_model
@@ -1067,23 +1252,23 @@ class TestFallbackNoTransformerBlocks:
         model = MagicMock()
         model.clone.return_value = patched_model
 
-        return model, patched_model, adapter
+        return model, patched_model, diffusion_model
 
     def test_returns_patched_model_on_missing_transformer_attr(self):
         node = MotifTeaCache()
-        model, patched_model, adapter = self._make_model_no_transformer_attr()
+        model, patched_model, diffusion_model = self._make_model_no_transformer_blocks_attr()
         result = node.apply_teacache(model=model, rel_l1_thresh=0.3, enable=True)
         assert result[0] is patched_model
 
     def test_enabled_flag_not_set_on_missing_transformer_attr(self):
         node = MotifTeaCache()
-        model, patched_model, adapter = self._make_model_no_transformer_attr()
-        # adapter has spec=[] so _teacache_enabled would raise AttributeError if accessed
-        # The guard in apply_teacache checks hasattr(adapter, "transformer"), not the flag
+        model, patched_model, diffusion_model = self._make_model_no_transformer_blocks_attr()
+        # diffusion_model has spec=[] so _teacache_enabled cannot be set
+        # Guard in apply_teacache checks hasattr(transformer, "transformer_blocks")
         result = node.apply_teacache(model=model, rel_l1_thresh=0.3, enable=True)
-        # Verify that teacache_enabled was not set (spec=[] adapter would raise)
-        assert not hasattr(adapter, "_teacache_enabled"), (
-            "No _teacache_enabled must be set on adapter without .transformer"
+        # Verify that teacache_enabled was not set (spec=[] would raise AttributeError)
+        assert not hasattr(diffusion_model, "_teacache_enabled"), (
+            "No _teacache_enabled must be set on diffusion_model without transformer_blocks"
         )
 
 
@@ -1092,62 +1277,62 @@ class TestFallbackNoTransformerBlocks:
 # ===========================================================================
 
 class TestIdempotencyDetailed:
-    """Re-applying apply_teacache to an already-patched adapter must not
+    """Re-applying apply_teacache to an already-patched transformer must not
     install a second layer of wrapping."""
 
     def _patch_once(self):
-        """Return (node, model2, adapter) after first patch applied."""
+        """Return (node, model2, transformer) after first patch applied."""
         node = MotifTeaCache()
-        model, patched_model, inner_model, adapter, transformer = _make_full_mock_model()
+        model, patched_model, inner_model, transformer, _ = _make_full_mock_model()
         node.apply_teacache(model=model, rel_l1_thresh=0.3, enable=True)
 
-        # Second model whose clone still resolves to the same inner_model/adapter
+        # Second model whose clone still resolves to the same inner_model/transformer
         patched_model2 = MagicMock(name="patched_model2")
         patched_model2.model = inner_model
         model2 = MagicMock(name="model2")
         model2.clone.return_value = patched_model2
 
-        return node, model2, adapter
+        return node, model2, transformer
 
     def test_forward_object_identity_preserved_on_repatch(self):
-        """adapter.forward must be the exact same object after second apply."""
-        node, model2, adapter = self._patch_once()
-        forward_before = adapter.forward
+        """transformer.forward must be the exact same object after second apply."""
+        node, model2, transformer = self._patch_once()
+        forward_before = transformer.forward
         node.apply_teacache(model=model2, rel_l1_thresh=0.5, enable=True)
-        assert adapter.forward is forward_before, (
-            "Idempotency: adapter.forward identity must not change on second apply"
+        assert transformer.forward is forward_before, (
+            "Idempotency: transformer.forward identity must not change on second apply"
         )
 
     def test_state_object_identity_preserved_on_repatch(self):
         """_teacache_state must be the same object instance after second apply."""
-        node, model2, adapter = self._patch_once()
-        state_before = adapter._teacache_state
+        node, model2, transformer = self._patch_once()
+        state_before = transformer._teacache_state
         node.apply_teacache(model=model2, rel_l1_thresh=0.5, enable=True)
-        assert adapter._teacache_state is state_before, (
+        assert transformer._teacache_state is state_before, (
             "Idempotency: _teacache_state object must not be replaced on second apply"
         )
 
     def test_state_is_reset_on_repatch(self):
         """Idempotency path resets cache state so the next generation starts clean."""
-        node, model2, adapter = self._patch_once()
+        node, model2, transformer = self._patch_once()
         # Dirty the state to simulate mid-generation state
-        adapter._teacache_state.step_counter = 42
-        adapter._teacache_state.accumulated_rel_l1_distance = 99.9
-        adapter._teacache_state.previous_modulated_input = torch.ones(1, 8, 8)
+        transformer._teacache_state.step_counter = 42
+        transformer._teacache_state.accumulated_rel_l1_distance = 99.9
+        transformer._teacache_state.previous_modulated_input = torch.ones(1, 8, 8)
 
         node.apply_teacache(model=model2, rel_l1_thresh=0.5, enable=True)
 
-        assert adapter._teacache_state.step_counter == 0, (
+        assert transformer._teacache_state.step_counter == 0, (
             "Idempotency path must reset step_counter"
         )
-        assert adapter._teacache_state.accumulated_rel_l1_distance == 0.0, (
+        assert transformer._teacache_state.accumulated_rel_l1_distance == 0.0, (
             "Idempotency path must reset accumulated_rel_l1_distance"
         )
-        assert adapter._teacache_state.previous_modulated_input is None, (
+        assert transformer._teacache_state.previous_modulated_input is None, (
             "Idempotency path must reset previous_modulated_input"
         )
 
     def test_enabled_flag_remains_true_on_repatch(self):
-        node, model2, adapter = self._patch_once()
+        node, model2, transformer = self._patch_once()
         node.apply_teacache(model=model2, rel_l1_thresh=0.5, enable=True)
-        assert adapter._teacache_enabled is True
+        assert transformer._teacache_enabled is True

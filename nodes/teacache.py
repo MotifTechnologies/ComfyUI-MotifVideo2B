@@ -12,7 +12,8 @@ Architecture notes for MotifVideo 1.9B:
   norm1(hidden_states, emb=temb) → (norm_hs, gate_msa, shift_mlp, scale_mlp, gate_mlp)
 - temb is computed inside transformer.forward via self.time_text_embed()
 - Flow matching model (no CFG alternation) → single cache, no even/odd split
-- Monkey-patch target: MotifVideoModelAdapter.forward (outermost entry point)
+- Monkey-patch target: diffusion_model.forward (MotifVideoTransformer3DModel is the
+  diffusion_model directly; there is no intermediate adapter wrapper)
 
 Cache state lifecycle:
   reset() must be called between separate video generations. The patch
@@ -54,9 +55,17 @@ _MOTIF_POLY_COEFFS = [
 class _TeaCacheState:
     """Mutable cache state attached to a patched adapter instance."""
 
-    def __init__(self, rel_l1_thresh: float, poly_coeffs: list):
+    def __init__(
+        self,
+        rel_l1_thresh: float,
+        poly_coeffs: list,
+        start: float = 0.0,
+        end: float = 1.0,
+    ):
         self.rel_l1_thresh = rel_l1_thresh
         self.rescale_func = np.poly1d(poly_coeffs)
+        self.start = start
+        self.end = end
 
         # Cache tensors (reset between generations)
         self.accumulated_rel_l1_distance: float = 0.0
@@ -145,6 +154,26 @@ def _extract_modulated_input(
 # Patched adapter forward factory
 # ---------------------------------------------------------------------------
 
+def _compute_sampling_progress(timestep: torch.Tensor) -> float:
+    """Compute sampling progress in [0.0, 1.0] from a flow-matching sigma.
+
+    MotifVideo uses ModelSamplingFlux (shift=2.5) where:
+      - timestep passed to the model IS the sigma value (timestep fn = identity)
+      - sigma ≈ 1.0 at the start (full noise), sigma ≈ 0.0 at the end (clean image)
+
+    Therefore: progress = 1.0 - sigma, clamped to [0.0, 1.0].
+
+    Args:
+        timestep: Sigma tensor as received by the adapter forward, any shape.
+
+    Returns:
+        Scalar float representing sampling progress (0.0=start, 1.0=end).
+    """
+    sigma = timestep.flatten()[0].item()
+    progress = 1.0 - sigma
+    return max(0.0, min(1.0, progress))
+
+
 def _make_teacache_forward(original_adapter_forward, transformer, state: _TeaCacheState):
     """Return a replacement forward function for MotifVideoModelAdapter.
 
@@ -176,6 +205,35 @@ def _make_teacache_forward(original_adapter_forward, transformer, state: _TeaCac
         **kwargs,
     ):
         # ------------------------------------------------------------------
+        # Step 0: Check start/end range. If outside, bypass caching entirely.
+        # progress: 0.0 = start of sampling (high noise), 1.0 = end (clean).
+        # ------------------------------------------------------------------
+        progress = _compute_sampling_progress(timestep)
+        in_range = state.start <= progress < state.end
+
+        if not in_range:
+            logger.debug(
+                "[TeaCache] Step %d: OUT-OF-RANGE (progress=%.4f, range=[%.2f, %.2f)) "
+                "— full forward, no cache update",
+                state.step_counter,
+                progress,
+                state.start,
+                state.end,
+            )
+            state.step_counter += 1
+            return original_adapter_forward(
+                x,
+                timestep,
+                context=context,
+                control=control,
+                transformer_options=transformer_options,
+                encoder_attention_mask=encoder_attention_mask,
+                pooled_projections=pooled_projections,
+                image_embeds=image_embeds,
+                **kwargs,
+            )
+
+        # ------------------------------------------------------------------
         # Step 1: Compute temb + embedded hidden states (mirrors transformer
         # forward preamble) so we can extract modulated input without running
         # the full forward.
@@ -202,8 +260,9 @@ def _make_teacache_forward(original_adapter_forward, transformer, state: _TeaCac
             # (adapter input x, shape [B, C, T, H, W]). We must return in
             # that same space.
             logger.debug(
-                "[TeaCache] Step %d: SKIP (accumulated=%.4f < thresh=%.4f)",
+                "[TeaCache] Step %d: SKIP (progress=%.4f, accumulated=%.4f < thresh=%.4f)",
                 state.step_counter,
+                progress,
                 state.accumulated_rel_l1_distance,
                 state.rel_l1_thresh,
             )
@@ -211,8 +270,9 @@ def _make_teacache_forward(original_adapter_forward, transformer, state: _TeaCac
         else:
             # Full forward pass
             logger.debug(
-                "[TeaCache] Step %d: COMPUTE (accumulated=%.4f >= thresh=%.4f or init)",
+                "[TeaCache] Step %d: COMPUTE (progress=%.4f, accumulated=%.4f >= thresh=%.4f or init)",
                 state.step_counter,
+                progress,
                 state.accumulated_rel_l1_distance,
                 state.rel_l1_thresh,
             )
@@ -285,6 +345,36 @@ class MotifTeaCache:
                         "tooltip": "Disable to bypass TeaCache (useful for A/B comparison).",
                     },
                 ),
+                "start": (
+                    "FLOAT",
+                    {
+                        "default": 0.0,
+                        "min": 0.0,
+                        "max": 1.0,
+                        "step": 0.05,
+                        "tooltip": (
+                            "Sampling progress at which TeaCache becomes active "
+                            "(0.0=start of sampling, 1.0=end). "
+                            "Set > 0.0 to skip caching during early high-noise steps, "
+                            "which preserves coarse structure quality."
+                        ),
+                    },
+                ),
+                "end": (
+                    "FLOAT",
+                    {
+                        "default": 1.0,
+                        "min": 0.0,
+                        "max": 1.0,
+                        "step": 0.05,
+                        "tooltip": (
+                            "Sampling progress at which TeaCache becomes inactive "
+                            "(0.0=start of sampling, 1.0=end). "
+                            "Set < 1.0 to skip caching during late low-noise steps, "
+                            "which preserves fine detail quality."
+                        ),
+                    },
+                ),
             }
         }
 
@@ -299,13 +389,24 @@ class MotifTeaCache:
         "Connect between Load Diffusion Model and KSampler."
     )
 
-    def apply_teacache(self, model, rel_l1_thresh: float, enable: bool):
+    def apply_teacache(
+        self,
+        model,
+        rel_l1_thresh: float,
+        enable: bool,
+        start: float = 0.0,
+        end: float = 1.0,
+    ):
         """Patch the diffusion model with TeaCache logic.
 
         Args:
             model: ComfyUI ModelPatcher wrapping MotifVideoModel.
             rel_l1_thresh: Threshold for relative L1 distance accumulation.
             enable: If False, return model unchanged.
+            start: Sampling progress (0.0–1.0) at which caching activates.
+                   Steps before this progress threshold are computed in full.
+            end: Sampling progress (0.0–1.0) at which caching deactivates.
+                 Steps at or beyond this threshold are computed in full.
 
         Returns:
             Tuple of (patched_model,) or (original_model,) if disabled.
@@ -318,61 +419,63 @@ class MotifTeaCache:
         patched_model = model.clone()
 
         # Reach through ComfyUI's ModelPatcher to get the inner model
-        # (MotifVideoModel) and then the adapter + transformer.
+        # (MotifVideoModel) and then the transformer.
+        #
+        # Architecture note: diffusion_model IS MotifVideoTransformer3DModel directly.
+        # There is no intermediate adapter wrapper — the transformer is the diffusion_model.
         inner_model = patched_model.model  # MotifVideoModel (BaseModel subclass)
-        adapter = inner_model.diffusion_model  # MotifVideoModelAdapter
-
-        if not hasattr(adapter, "transformer"):
-            logger.warning(
-                "[TeaCache] diffusion_model has no .transformer attribute. "
-                "Expected MotifVideoModelAdapter. TeaCache not applied."
-            )
-            return (patched_model,)
-
-        transformer = adapter.transformer  # MotifVideoTransformer3DModel
+        transformer = inner_model.diffusion_model  # MotifVideoTransformer3DModel (directly)
 
         if not hasattr(transformer, "transformer_blocks") or len(transformer.transformer_blocks) == 0:
             logger.warning(
-                "[TeaCache] transformer has no transformer_blocks. TeaCache not applied."
+                "[TeaCache] diffusion_model has no transformer_blocks. "
+                "Expected MotifVideoTransformer3DModel. TeaCache not applied."
             )
             return (patched_model,)
 
         # Check if already patched (idempotency guard)
-        if getattr(adapter, "_teacache_enabled", False):
+        if getattr(transformer, "_teacache_enabled", False):
             logger.info("[TeaCache] Already patched — skipping re-patch.")
-            # Update threshold on existing state if different
-            if hasattr(adapter, "_teacache_state"):
-                adapter._teacache_state.rel_l1_thresh = rel_l1_thresh
-                adapter._teacache_state.reset()
+            # Update parameters on existing state if different
+            if hasattr(transformer, "_teacache_state"):
+                transformer._teacache_state.rel_l1_thresh = rel_l1_thresh
+                transformer._teacache_state.start = start
+                transformer._teacache_state.end = end
+                transformer._teacache_state.reset()
             return (patched_model,)
 
         # Build cache state
         state = _TeaCacheState(
             rel_l1_thresh=rel_l1_thresh,
             poly_coeffs=_MOTIF_POLY_COEFFS,
+            start=start,
+            end=end,
         )
 
-        # Save original forward and install patched forward
-        original_adapter_forward = adapter.forward
+        # Save original forward and install patched forward.
+        # transformer.forward here is the ComfyUI-compatible forward installed by
+        # _make_comfyui_forward in the loader. TeaCache wraps this outermost entry.
+        original_forward = transformer.forward
 
         patched_forward = _make_teacache_forward(
-            original_adapter_forward=original_adapter_forward,
+            original_adapter_forward=original_forward,
             transformer=transformer,
             state=state,
         )
 
-        # Bind the patched forward as an instance method replacement
-        # (use __get__ to bind properly, or just assign as a lambda-style callable)
-        adapter.forward = patched_forward
+        # Replace forward on the transformer instance directly
+        transformer.forward = patched_forward
 
         # Mark as patched and store state for introspection/reset
-        adapter._teacache_enabled = True
-        adapter._teacache_state = state
+        transformer._teacache_enabled = True
+        transformer._teacache_state = state
 
         logger.info(
-            "[TeaCache] Patched MotifVideoModelAdapter. "
-            "rel_l1_thresh=%.3f, poly_coeffs=%s",
+            "[TeaCache] Patched MotifVideoTransformer3DModel (diffusion_model). "
+            "rel_l1_thresh=%.3f, start=%.2f, end=%.2f, poly_coeffs=%s",
             rel_l1_thresh,
+            start,
+            end,
             _MOTIF_POLY_COEFFS,
         )
 

@@ -67,7 +67,7 @@ ln -s /path/to/checkpoint/vae/diffusion_pytorch_model.safetensors \
 
 | 노드 | 입력 | 출력 | 설명 |
 |------|------|------|------|
-| MotifVideo TeaCache | model, rel_l1_thresh, enable | MODEL | TeaCache 가속 적용 (샘플링 속도 향상) |
+| MotifVideo TeaCache | model, rel_l1_thresh, enable, start, end | MODEL | TeaCache 가속 적용 (샘플링 속도 향상) |
 | Load MotifVideo Text Encoder | clip_name, dtype | CLIP | T5Gemma2 텍스트 인코더 로드 |
 | MotifVideo Text Encode | CLIP, text, negative_prompt | CONDITIONING x2 | 프롬프트 인코딩 |
 | Empty MotifVideo Latent | width, height, num_frames, batch_size | LATENT | 빈 비디오 latent |
@@ -78,6 +78,8 @@ ln -s /path/to/checkpoint/vae/diffusion_pytorch_model.safetensors \
 **MotifVideo TeaCache** 노드 파라미터:
 - `rel_l1_thresh` (float): 캐시 재사용 임계값. 낮을수록 더 공격적 캐싱으로 빠르지만 품질 저하 위험. 높을수록 안전하지만 속도 향상 제한. 권장값: **0.15–0.3**
 - `enable` (boolean): True = TeaCache 적용, False = 비활성화 (A/B 비교 용도)
+- `start` (float, 0.0–1.0): TeaCache가 활성화되는 샘플링 진행도 시작점. 0.0=샘플링 시작(고노이즈), 1.0=샘플링 끝(클린). 초기 스텝(코스 구조 결정 구간)은 캐싱하지 않는 것이 품질에 유리하므로 0.1–0.2 권장. 기본값: **0.0** (전체 구간 캐싱)
+- `end` (float, 0.0–1.0): TeaCache가 비활성화되는 샘플링 진행도 종료점. 후반 스텝(세부 디테일 결정 구간)은 캐싱하지 않는 것이 품질에 유리하므로 0.8–0.9 권장. 기본값: **1.0** (전체 구간 캐싱)
 
 ## 체크포인트 교체
 

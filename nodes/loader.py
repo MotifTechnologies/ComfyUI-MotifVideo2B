@@ -1,9 +1,4 @@
-"""MotifVideo loader nodes.
-
-MotifTextEncoderLoader: CLIPLoader-style node for T5Gemma2 text encoder.
-Loads from ComfyUI's text_encoders folder, returns CLIP compatible with
-CLIPTextEncode and KSampler.
-"""
+"""MotifVideo loader nodes."""
 
 import os
 import logging
@@ -15,41 +10,20 @@ import comfy.supported_models_base as supported_models_base
 
 
 class MotifTextEncoderLoader:
-    """Load MotifVideo T5Gemma2 text encoder.
+    """Load MotifVideo T5Gemma2 text encoder (CLIPLoader style).
 
-    Expects a directory (symlinked in models/text_encoders/) containing:
-      - model.safetensors (16.4GB)
-      - config.json
+    Select model.safetensors from models/text_encoders/ dropdown.
+    config.json is auto-detected in the same directory.
+    Tokenizer is auto-detected as sibling directory (same parent + /tokenizer/).
 
-    Tokenizer directory must also be in models/text_encoders/ containing:
-      - tokenizer.json
-      - tokenizer_config.json
-
-    Output CLIP is compatible with CLIPTextEncode node.
+    Output CLIP is compatible with CLIPTextEncode and KSampler.
     """
 
     @classmethod
     def INPUT_TYPES(cls):
-        # List directories in text_encoders folder
-        te_files = folder_paths.get_filename_list("text_encoders")
-        # Also allow directory names (for our symlinked dirs)
-        te_dir = folder_paths.get_folder_paths("text_encoders")[0]
-        te_dirs = []
-        if os.path.exists(te_dir):
-            for name in sorted(os.listdir(te_dir)):
-                full = os.path.join(te_dir, name)
-                if os.path.isdir(full) and os.path.exists(os.path.join(full, "model.safetensors")):
-                    te_dirs.append(name)
-
         return {
             "required": {
-                "text_encoder": (te_dirs if te_dirs else ["(no model directories found)"],),
-                "tokenizer": (
-                    [d for d in sorted(os.listdir(te_dir))
-                     if os.path.isdir(os.path.join(te_dir, d)) and
-                     os.path.exists(os.path.join(te_dir, d, "tokenizer.json"))]
-                    if os.path.exists(te_dir) else ["(no tokenizer directories found)"],
-                ),
+                "clip_name": (folder_paths.get_filename_list("text_encoders"),),
                 "dtype": (["bfloat16", "float16", "float32"],),
             },
             "optional": {
@@ -58,18 +32,19 @@ class MotifTextEncoderLoader:
         }
 
     RETURN_TYPES = ("CLIP",)
-    FUNCTION = "load_text_encoder"
+    FUNCTION = "load_clip"
     CATEGORY = "motifvideo"
 
-    DESCRIPTION = "Load MotifVideo T5Gemma2 text encoder.\nOutput CLIP is compatible with CLIPTextEncode."
+    DESCRIPTION = (
+        "Load MotifVideo T5Gemma2 text encoder.\n"
+        "Select model.safetensors from text_encoders folder.\n"
+        "config.json and tokenizer are auto-detected.\n"
+        "Output is compatible with CLIPTextEncode."
+    )
 
-    def load_text_encoder(self, text_encoder, tokenizer, dtype, device="default"):
+    def load_clip(self, clip_name, dtype, device="default"):
         import safetensors.torch
         from ..text_encoders.t5_gemma2 import MotifVideoSD1Tokenizer, te
-
-        te_dir = folder_paths.get_folder_paths("text_encoders")[0]
-        text_encoder_path = os.path.join(te_dir, text_encoder)
-        tokenizer_path = os.path.join(te_dir, tokenizer)
 
         dtype_map = {
             "bfloat16": torch.bfloat16,
@@ -78,13 +53,41 @@ class MotifTextEncoderLoader:
         }
         torch_dtype = dtype_map[dtype]
 
-        # Load state dict
-        ckpt_file = os.path.join(text_encoder_path, "model.safetensors")
-        logging.info("[MotifVideo] Loading text encoder from %s", ckpt_file)
-        state_dict = safetensors.torch.load_file(ckpt_file, device="cpu")
+        clip_path = folder_paths.get_full_path_or_raise("text_encoders", clip_name)
 
-        # Config and tokenizer paths
-        config_path = os.path.join(text_encoder_path, "config.json")
+        # Auto-detect: if clip_name is inside a directory, look for config.json there
+        clip_dir = os.path.dirname(clip_path)
+        config_path = os.path.join(clip_dir, "config.json")
+        if not os.path.exists(config_path):
+            raise FileNotFoundError(
+                f"config.json not found in {clip_dir}. "
+                "Put model.safetensors and config.json in the same directory."
+            )
+
+        # Auto-detect tokenizer: look for sibling 'tokenizer' dir or parent/tokenizer
+        tokenizer_path = None
+        parent = os.path.dirname(clip_dir)
+        for candidate in [
+            os.path.join(parent, "tokenizer"),          # sibling: ../tokenizer/
+            os.path.join(clip_dir, "tokenizer"),         # child: ./tokenizer/
+            os.path.join(clip_dir, "..", "tokenizer"),    # parent sibling
+        ]:
+            if os.path.isdir(candidate) and os.path.exists(os.path.join(candidate, "tokenizer.json")):
+                tokenizer_path = os.path.realpath(candidate)
+                break
+
+        if tokenizer_path is None:
+            raise FileNotFoundError(
+                f"tokenizer directory not found near {clip_dir}. "
+                "Expected a 'tokenizer/' directory with tokenizer.json next to the text_encoder."
+            )
+
+        logging.info("[MotifVideo] Loading text encoder: %s", clip_path)
+        logging.info("[MotifVideo] Config: %s", config_path)
+        logging.info("[MotifVideo] Tokenizer: %s", tokenizer_path)
+
+        state_dict = safetensors.torch.load_file(clip_path, device="cpu")
+
         model_options = {"motifvideo_config_path": config_path}
         tokenizer_data = {"motifvideo_tokenizer_path": tokenizer_path}
 
@@ -92,13 +95,11 @@ class MotifTextEncoderLoader:
             model_options["load_device"] = torch.device("cpu")
             model_options["offload_device"] = torch.device("cpu")
 
-        # Build ClipTarget
         target = supported_models_base.ClipTarget(
             MotifVideoSD1Tokenizer, te(dtype_t5gemma2=torch_dtype)
         )
         target.params = {}
 
-        # Param count for memory estimation
         param_count = sum(
             v.numel() for k, v in state_dict.items() if k.startswith("encoder.")
         )

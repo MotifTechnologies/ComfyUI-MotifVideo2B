@@ -1,5 +1,5 @@
-from .loader import MotifVideoModelLoader
+from .loader import MotifTextEncoderLoader
 from .text_encode import MotifTextEncode
 from .latent import EmptyMotifLatent
 
-__all__ = ["MotifVideoModelLoader", "MotifTextEncode", "EmptyMotifLatent"]
+__all__ = ["MotifTextEncoderLoader", "MotifTextEncode", "EmptyMotifLatent"]

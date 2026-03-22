@@ -69,6 +69,8 @@ try:
                 "patch_size": patch_size,
                 "patch_size_t": 1,
                 "rope_axes_dim": [16, 56, 56],
+                "cross_attention_dual": False,
+                "cross_attention_single": False,
             }
 
         # Not a MotifVideo model — fall through to original detection logic.

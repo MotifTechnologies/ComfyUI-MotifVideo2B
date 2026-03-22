@@ -868,9 +868,10 @@ class TestMakeTeacacheForward:
         forward = _make_teacache_forward(mutating_fwd, transformer, state)
 
         forward(x, timestep=torch.tensor([0.5]))
-        # residual = output - ori_x = 99 - 1 = 98
-        assert torch.allclose(state.previous_residual, torch.full_like(x, 98.0)), (
-            "ori_x clone must capture pre-mutation value; residual must be output - original_x"
+        # residual = output(4ch) - ori_noise[:, :4](4ch) = 99 - 1 = 98
+        expected = torch.full((B, C, T, H, W), 98.0)
+        assert torch.allclose(state.previous_residual, expected), (
+            "ori_noise clone must capture pre-mutation value; residual must be output - original_noise"
         )
 
 

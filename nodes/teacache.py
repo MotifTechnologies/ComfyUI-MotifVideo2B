@@ -266,7 +266,11 @@ def _make_teacache_forward(original_adapter_forward, transformer, state: _TeaCac
                 state.accumulated_rel_l1_distance,
                 state.rel_l1_thresh,
             )
-            output = x + state.previous_residual
+            # Input x may have more channels than output (e.g. 33ch input
+            # = 16 noise + 16 latent_cond + 1 mask, but output is 16ch).
+            # Residual was computed against the noise channels only.
+            out_ch = state.previous_residual.shape[1]
+            output = x[:, :out_ch] + state.previous_residual
         else:
             # Full forward pass
             logger.debug(
@@ -276,7 +280,8 @@ def _make_teacache_forward(original_adapter_forward, transformer, state: _TeaCac
                 state.accumulated_rel_l1_distance,
                 state.rel_l1_thresh,
             )
-            ori_x = x.clone()
+            # Clone noise channels before forward (x may be mutated in-place)
+            ori_noise = x[:, :16].clone()
             output = original_adapter_forward(
                 x,
                 timestep,
@@ -288,8 +293,9 @@ def _make_teacache_forward(original_adapter_forward, transformer, state: _TeaCac
                 image_embeds=image_embeds,
                 **kwargs,
             )
-            # Cache the residual (output - input) in adapter I/O space
-            state.previous_residual = (output - ori_x).clone()
+            # Cache residual: output(16ch) - input noise channels(16ch).
+            out_ch = output.shape[1]
+            state.previous_residual = (output - ori_noise[:, :out_ch]).clone()
 
         # ------------------------------------------------------------------
         # Step 4: Update cache for next step

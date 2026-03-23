@@ -69,7 +69,6 @@ class _TeaCacheState:
         # Cache tensors (reset between generations)
         self.accumulated_rel_l1_distance: float = 0.0
         self.previous_modulated_input: torch.Tensor | None = None
-        self.previous_residual: torch.Tensor | None = None
         self.previous_output: torch.Tensor | None = None
         self.step_counter: int = 0
 
@@ -80,7 +79,6 @@ class _TeaCacheState:
         """Reset all cache state. Call between separate video generations."""
         self.accumulated_rel_l1_distance = 0.0
         self.previous_modulated_input = None
-        self.previous_residual = None
         self.previous_output = None
         self.step_counter = 0
 
@@ -91,7 +89,7 @@ class _TeaCacheState:
         Updates accumulated_rel_l1_distance in place.
         Resets accumulator to 0 when threshold is exceeded (full compute).
         """
-        if self.previous_modulated_input is None or self.previous_residual is None:
+        if self.previous_modulated_input is None or self.previous_output is None:
             # No cache yet — always compute
             return False
 
@@ -179,6 +177,10 @@ def _compute_sampling_progress(timestep: torch.Tensor) -> float:
         Scalar float representing sampling progress (0.0=start, 1.0=end).
     """
     sigma = timestep.flatten()[0].item()
+    # ComfyUI with ModelSamplingSD3 uses sigma range [0, 1000].
+    # Normalize to [0, 1] before computing progress.
+    if sigma > 1.0:
+        sigma = sigma / 1000.0
     progress = 1.0 - sigma
     return max(0.0, min(1.0, progress))
 
@@ -202,6 +204,23 @@ def _make_teacache_forward(original_adapter_forward, transformer, state: _TeaCac
         original forward.
     """
 
+    # Per-conditioning-type cache states for CFG support.
+    # Stored on the parent state so idempotency guard can access them.
+    if not hasattr(state, 'cond_states'):
+        state.cond_states = {}
+
+    def _get_cond_state(cond_type: int) -> _TeaCacheState:
+        """Get or create a cache state for a specific conditioning type."""
+        if cond_type not in state.cond_states:
+            state.cond_states[cond_type] = _TeaCacheState(
+                rel_l1_thresh=state.rel_l1_thresh,
+                poly_coeffs=list(state.rescale_func.coeffs),
+                start=state.start,
+                end=state.end,
+                calibrate=state.calibrate,
+            )
+        return state.cond_states[cond_type]
+
     def teacache_forward(
         x,
         timestep,
@@ -214,38 +233,14 @@ def _make_teacache_forward(original_adapter_forward, transformer, state: _TeaCac
         **kwargs,
     ):
         # ------------------------------------------------------------------
-        # Step 0: Check start/end range. If outside, bypass caching entirely.
-        # progress: 0.0 = start of sampling (high noise), 1.0 = end (clean).
+        # Step 0: Determine conditioning type (positive=0, negative=1)
         # ------------------------------------------------------------------
-        progress = _compute_sampling_progress(timestep)
-        in_range = state.start <= progress < state.end
-
-        if not in_range:
-            logger.debug(
-                "[TeaCache] Step %d: OUT-OF-RANGE (progress=%.4f, range=[%.2f, %.2f)) "
-                "— full forward, no cache update",
-                state.step_counter,
-                progress,
-                state.start,
-                state.end,
-            )
-            state.step_counter += 1
-            return original_adapter_forward(
-                x,
-                timestep,
-                context=context,
-                control=control,
-                transformer_options=transformer_options,
-                encoder_attention_mask=encoder_attention_mask,
-                pooled_projections=pooled_projections,
-                image_embeds=image_embeds,
-                **kwargs,
-            )
+        cond_or_uncond = transformer_options.get("cond_or_uncond", [0]) if transformer_options else [0]
+        cond_type = cond_or_uncond[0] if cond_or_uncond else 0
+        cs = _get_cond_state(cond_type)
 
         # ------------------------------------------------------------------
-        # Step 1: Compute temb + embedded hidden states (mirrors transformer
-        # forward preamble) so we can extract modulated input without running
-        # the full forward.
+        # Step 1: Compute temb + embedded hidden states for modulated input
         # ------------------------------------------------------------------
         with torch.no_grad():
             temb, _token_replace_emb = transformer.time_text_embed(
@@ -253,107 +248,75 @@ def _make_teacache_forward(original_adapter_forward, transformer, state: _TeaCac
             )
             x_embedded = transformer.x_embedder(x)
 
-        # ------------------------------------------------------------------
-        # Step 2: Extract timestep-modulated input from block[0].norm1
-        # ------------------------------------------------------------------
         modulated_inp = _extract_modulated_input(transformer, x_embedded, temb)
 
         # ------------------------------------------------------------------
-        # Step 3: Calibration mode — always compute, collect raw/output diffs
+        # Step 2: Calibration mode — always compute, collect diffs
         # ------------------------------------------------------------------
-        if state.calibrate:
-            ori_noise = x[:, :16].clone()
+        if cs.calibrate:
             output = original_adapter_forward(
-                x,
-                timestep,
-                context=context,
-                control=control,
+                x, timestep, context=context, control=control,
                 transformer_options=transformer_options,
                 encoder_attention_mask=encoder_attention_mask,
                 pooled_projections=pooled_projections,
-                image_embeds=image_embeds,
-                **kwargs,
+                image_embeds=image_embeds, **kwargs,
             )
 
-            if (state.previous_modulated_input is not None
-                    and state.previous_output is not None
-                    and state.previous_modulated_input.shape == modulated_inp.shape
-                    and state.previous_output.shape == output.shape):
-                # Raw relative L1 diff (input space)
-                prev_mod = state.previous_modulated_input
+            if (cs.previous_modulated_input is not None
+                    and cs.previous_output is not None
+                    and cs.previous_modulated_input.shape == modulated_inp.shape
+                    and cs.previous_output.shape == output.shape):
+                prev_mod = cs.previous_modulated_input
                 mean_prev = prev_mod.abs().mean()
                 raw_diff = (modulated_inp - prev_mod).abs().mean() / (mean_prev + 1e-10)
                 raw_diff_val = raw_diff.cpu().item()
 
-                # Actual relative L1 diff (output space)
-                out_ch = output.shape[1]
-                mean_prev_out = state.previous_output.abs().mean()
-                output_diff = (output - state.previous_output).abs().mean() / (mean_prev_out + 1e-10)
+                mean_prev_out = cs.previous_output.abs().mean()
+                output_diff = (output - cs.previous_output).abs().mean() / (mean_prev_out + 1e-10)
                 output_diff_val = output_diff.cpu().item()
 
-                state.calibration_data.append((raw_diff_val, output_diff_val))
+                cs.calibration_data.append((raw_diff_val, output_diff_val))
                 print(
-                    f"[TeaCache:CALIB] step={state.step_counter:3d} "
+                    f"[TeaCache:CALIB] cond={cond_type} step={cs.step_counter:3d} "
                     f"raw_diff={raw_diff_val:.8f} output_diff={output_diff_val:.8f}"
                 )
 
-            state.previous_output = output.clone()
-            state.previous_modulated_input = modulated_inp.clone()
-            out_ch = output.shape[1]
-            state.previous_residual = (output - ori_noise[:, :out_ch]).clone()
-            state.step_counter += 1
-
+            cs.previous_output = output.clone()
+            cs.previous_modulated_input = modulated_inp.clone()
+            cs.step_counter += 1
             return output
 
         # ------------------------------------------------------------------
-        # Step 3b: Normal mode — cache decision
+        # Step 3: Cache decision — first step always computes
         # ------------------------------------------------------------------
-        skip = state.should_skip(modulated_inp)
+        skip = cs.should_skip(modulated_inp)
+        should_calc = not skip
 
-        if skip:
+        if should_calc:
             logger.debug(
-                "[TeaCache] Step %d: SKIP (progress=%.4f, accumulated=%.4f < thresh=%.4f)",
-                state.step_counter,
-                progress,
-                state.accumulated_rel_l1_distance,
-                state.rel_l1_thresh,
+                "[TeaCache] cond=%d Step %d: COMPUTE (accumulated=%.4f)",
+                cond_type, cs.step_counter, cs.accumulated_rel_l1_distance,
             )
-            # Input x may have more channels than output (e.g. 33ch input
-            # = 16 noise + 16 latent_cond + 1 mask, but output is 16ch).
-            # Residual was computed against the noise channels only.
-            out_ch = state.previous_residual.shape[1]
-            output = x[:, :out_ch] + state.previous_residual
-        else:
-            # Full forward pass
-            logger.debug(
-                "[TeaCache] Step %d: COMPUTE (progress=%.4f, accumulated=%.4f >= thresh=%.4f or init)",
-                state.step_counter,
-                progress,
-                state.accumulated_rel_l1_distance,
-                state.rel_l1_thresh,
-            )
-            # Clone noise channels before forward (x may be mutated in-place)
-            ori_noise = x[:, :16].clone()
             output = original_adapter_forward(
-                x,
-                timestep,
-                context=context,
-                control=control,
+                x, timestep, context=context, control=control,
                 transformer_options=transformer_options,
                 encoder_attention_mask=encoder_attention_mask,
                 pooled_projections=pooled_projections,
-                image_embeds=image_embeds,
-                **kwargs,
+                image_embeds=image_embeds, **kwargs,
             )
-            # Cache residual: output(16ch) - input noise channels(16ch).
-            out_ch = output.shape[1]
-            state.previous_residual = (output - ori_noise[:, :out_ch]).clone()
+            cs.previous_output = output.clone()
+        else:
+            logger.debug(
+                "[TeaCache] cond=%d Step %d: SKIP (accumulated=%.4f < thresh=%.4f)",
+                cond_type, cs.step_counter, cs.accumulated_rel_l1_distance, cs.rel_l1_thresh,
+            )
+            output = cs.previous_output
 
         # ------------------------------------------------------------------
         # Step 4: Update cache for next step
         # ------------------------------------------------------------------
-        state.previous_modulated_input = modulated_inp.clone()
-        state.step_counter += 1
+        cs.previous_modulated_input = modulated_inp.clone()
+        cs.step_counter += 1
 
         return output
 
@@ -513,6 +476,13 @@ class MotifTeaCache:
                 transformer._teacache_state.start = start
                 transformer._teacache_state.end = end
                 transformer._teacache_state.reset()
+                # Reset per-conditioning cache states
+                if hasattr(transformer._teacache_state, 'cond_states'):
+                    for cs in transformer._teacache_state.cond_states.values():
+                        cs.rel_l1_thresh = rel_l1_thresh
+                        cs.start = start
+                        cs.end = end
+                        cs.reset()
             return (patched_model,)
 
         # Build cache state

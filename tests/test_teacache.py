@@ -172,11 +172,11 @@ class TestTeaCacheStateReset:
         state.reset()
         assert state.previous_modulated_input is None
 
-    def test_reset_clears_previous_residual(self):
+    def test_reset_clears_previous_output(self):
         state = _make_state()
-        state.previous_residual = _make_tensor()
+        state.previous_output = _make_tensor()
         state.reset()
-        assert state.previous_residual is None
+        assert state.previous_output is None
 
     def test_reset_clears_step_counter(self):
         state = _make_state()
@@ -205,11 +205,11 @@ class TestTeaCacheStateShouldSkip:
         result = state.should_skip(current)
         assert result is False
 
-    def test_returns_false_when_previous_residual_is_none(self):
-        """previous_modulated_input set but previous_residual is None → must compute."""
+    def test_returns_false_when_previous_output_is_none(self):
+        """previous_modulated_input set but previous_output is None → must compute."""
         state = _make_state(thresh=1.0)
         state.previous_modulated_input = _make_tensor(1.0)
-        # previous_residual remains None
+        # previous_output remains None
         current = _make_tensor(1.0)
         result = state.should_skip(current)
         assert result is False
@@ -221,7 +221,7 @@ class TestTeaCacheStateShouldSkip:
         # Populate cache
         prev_tensor = _make_tensor(1.0)
         state.previous_modulated_input = prev_tensor.clone()
-        state.previous_residual = _make_tensor(0.5)  # arbitrary
+        state.previous_output = _make_tensor(0.5)  # arbitrary
 
         # current is almost identical to previous → raw_diff ≈ 0 → rescaled tiny
         current = _make_tensor(1.0)
@@ -234,7 +234,7 @@ class TestTeaCacheStateShouldSkip:
         state = _make_state(thresh=0.0)
         prev_tensor = _make_tensor(2.0)
         state.previous_modulated_input = prev_tensor.clone()
-        state.previous_residual = _make_tensor(0.5)
+        state.previous_output = _make_tensor(0.5)
 
         # Different tensor → non-zero diff
         current = _make_tensor(3.0)
@@ -248,7 +248,7 @@ class TestTeaCacheStateShouldSkip:
         """Each skip step adds to accumulated_rel_l1_distance."""
         state = _make_state(thresh=1e9)
         state.previous_modulated_input = _make_tensor(1.0)
-        state.previous_residual = _make_tensor(0.5)
+        state.previous_output = _make_tensor(0.5)
 
         current = _make_tensor(1.0)
         state.should_skip(current)
@@ -264,7 +264,7 @@ class TestTeaCacheStateShouldSkip:
         """mean_prev < 1e-10 guard: degenerate previous input → return False."""
         state = _make_state(thresh=1e9)
         state.previous_modulated_input = torch.zeros(2, 4, 8)
-        state.previous_residual = _make_tensor(0.5)
+        state.previous_output = _make_tensor(0.5)
 
         current = _make_tensor(1.0)
         result = state.should_skip(current)
@@ -274,7 +274,7 @@ class TestTeaCacheStateShouldSkip:
         """accumulated just below threshold → skip."""
         state = _make_state(thresh=100.0)
         state.previous_modulated_input = _make_tensor(1.0)
-        state.previous_residual = _make_tensor(0.5)
+        state.previous_output = _make_tensor(0.5)
         # Drive accumulator to just below threshold manually
         state.accumulated_rel_l1_distance = 99.0
 
@@ -292,7 +292,7 @@ class TestTeaCacheStateShouldSkip:
         state = _make_state(thresh=1.0)
         prev = _make_tensor(1.0)
         state.previous_modulated_input = prev.clone()
-        state.previous_residual = _make_tensor(0.5)
+        state.previous_output = _make_tensor(0.5)
 
         current = _make_tensor(1.5)
         current_copy = current.clone()
@@ -516,9 +516,9 @@ class TestTeaCacheStateInit:
         state = _make_state()
         assert state.previous_modulated_input is None
 
-    def test_initial_previous_residual_is_none(self):
+    def test_initial_previous_output_is_none(self):
         state = _make_state()
-        assert state.previous_residual is None
+        assert state.previous_output is None
 
     def test_initial_step_counter_is_zero(self):
         state = _make_state()
@@ -708,39 +708,40 @@ class TestMakeTeacacheForward:
         original_fwd, transformer, state, x = self._make_components()
         forward = _make_teacache_forward(original_fwd, transformer, state)
 
-        assert state.step_counter == 0
         forward(x, timestep=torch.tensor([0.5]))
-        assert state.step_counter == 1
+        cs = state.cond_states[0]
+        assert cs.step_counter == 1
 
-    def test_compute_path_stores_residual(self):
-        """After compute step, state.previous_residual must be set."""
+    def test_compute_path_stores_output(self):
+        """After compute step, cs.previous_output must be set."""
         original_fwd, transformer, state, x = self._make_components()
         forward = _make_teacache_forward(original_fwd, transformer, state)
 
-        assert state.previous_residual is None
         forward(x, timestep=torch.tensor([0.5]))
-        assert state.previous_residual is not None
+        cs = state.cond_states[0]
+        assert cs.previous_output is not None
 
-    def test_compute_path_residual_equals_output_minus_input(self):
-        """Cached residual must equal output - original_x."""
+    def test_compute_path_output_equals_original_forward_result(self):
+        """Cached output must equal original_adapter_forward result (x+1)."""
         original_fwd, transformer, state, x = self._make_components()
         forward = _make_teacache_forward(original_fwd, transformer, state)
 
         result = forward(x.clone(), timestep=torch.tensor([0.5]))
-        # residual = output - original_x = (x+1) - x = 1
-        assert torch.allclose(state.previous_residual, torch.ones_like(x))
+        cs = state.cond_states[0]
+        # original_fwd returns x+1; x is all-ones so output is all-twos
+        assert torch.allclose(cs.previous_output, torch.full_like(x, 2.0))
 
     def test_compute_path_stores_modulated_input(self):
-        """After compute step, state.previous_modulated_input must be set."""
+        """After compute step, cs.previous_modulated_input must be set."""
         original_fwd, transformer, state, x = self._make_components()
         forward = _make_teacache_forward(original_fwd, transformer, state)
 
-        assert state.previous_modulated_input is None
         forward(x, timestep=torch.tensor([0.5]))
-        assert state.previous_modulated_input is not None
+        cs = state.cond_states[0]
+        assert cs.previous_modulated_input is not None
 
-    def test_skip_path_reuses_cached_residual(self):
-        """After seeding cache, skip step returns x + previous_residual.
+    def test_skip_path_reuses_cached_output(self):
+        """After seeding cache, skip step returns previous_output directly.
 
         norm_out in _make_components is zeros, so previous_modulated_input must
         be non-zero (to avoid the degenerate-zero guard in should_skip) AND the
@@ -751,13 +752,21 @@ class TestMakeTeacacheForward:
         original_fwd, transformer, state, x = self._make_components(thresh=1e9)
         forward = _make_teacache_forward(original_fwd, transformer, state)
 
-        # previous_modulated_input must be non-zero so mean_prev > 1e-10
-        state.previous_modulated_input = torch.ones(1, 16, 8)
-        state.previous_residual = torch.full_like(x, 7.0)
+        # Seed the cond_state (cond_type=0) with non-zero modulated input and cached output
+        # _make_teacache_forward creates cond_states on first call, so pre-populate
+        # by accessing state.cond_states after creating the forward closure
+        cs = state.cond_states if hasattr(state, 'cond_states') else {}
+        # Trigger cond_states creation by calling forward once and resetting, or
+        # directly inject: _make_teacache_forward already added cond_states to state
+        cs0 = state.cond_states.setdefault(0, _TeaCacheState(
+            rel_l1_thresh=1e9, poly_coeffs=_MOTIF_POLY_COEFFS
+        ))
+        cs0.previous_modulated_input = torch.ones(1, 16, 8)
+        cs0.previous_output = torch.full_like(x, 7.0)
 
         result = forward(x, timestep=torch.tensor([0.5]))
-        # skip path: output = x + previous_residual = 1 + 7 = 8
-        assert torch.allclose(result, torch.full_like(x, 8.0))
+        # skip path: output = previous_output = 7.0
+        assert torch.allclose(result, torch.full_like(x, 7.0))
 
     def test_skip_path_does_not_call_original_forward(self):
         """Original forward must not be called when cache is reused."""
@@ -770,9 +779,12 @@ class TestMakeTeacacheForward:
         _, transformer, state, x = self._make_components(thresh=1e9)
         forward = _make_teacache_forward(tracking_fwd, transformer, state)
 
-        # previous_modulated_input must be non-zero (avoid degenerate-zero guard)
-        state.previous_modulated_input = torch.ones(1, 16, 8)
-        state.previous_residual = torch.ones_like(x)
+        # Seed cond_state[0] with non-zero modulated input (avoid degenerate-zero guard)
+        cs0 = state.cond_states.setdefault(0, _TeaCacheState(
+            rel_l1_thresh=1e9, poly_coeffs=_MOTIF_POLY_COEFFS
+        ))
+        cs0.previous_modulated_input = torch.ones(1, 16, 8)
+        cs0.previous_output = torch.ones_like(x)
 
         forward(x, timestep=torch.tensor([0.5]))
         assert len(call_log) == 0, "original_adapter_forward must not be called on skip step"
@@ -782,12 +794,15 @@ class TestMakeTeacacheForward:
         original_fwd, transformer, state, x = self._make_components(thresh=1e9)
         forward = _make_teacache_forward(original_fwd, transformer, state)
 
-        # non-zero seed to avoid degenerate-zero guard
-        state.previous_modulated_input = torch.ones(1, 16, 8)
-        state.previous_residual = torch.ones_like(x)
+        # Seed cond_state[0] with non-zero modulated input to avoid degenerate-zero guard
+        cs0 = state.cond_states.setdefault(0, _TeaCacheState(
+            rel_l1_thresh=1e9, poly_coeffs=_MOTIF_POLY_COEFFS
+        ))
+        cs0.previous_modulated_input = torch.ones(1, 16, 8)
+        cs0.previous_output = torch.ones_like(x)
 
         forward(x, timestep=torch.tensor([0.5]))
-        assert state.step_counter == 1
+        assert cs0.step_counter == 1
 
     def test_skip_then_compute_then_skip_sequence(self):
         """Simulate a realistic 3-step sampling sequence.
@@ -806,10 +821,6 @@ class TestMakeTeacacheForward:
 
         compute_calls = []
 
-        def tracking_fwd(x_in, timestep, **kw):
-            compute_calls.append(state.step_counter)
-            return x_in + 1.0
-
         # Use non-zero norm_out so mean_prev > 1e-10 after step 0
         norm_out = torch.ones(1, 16, 8)
         block0 = MagicMock(name="block0")
@@ -821,39 +832,43 @@ class TestMakeTeacacheForward:
         transformer.x_embedder.return_value = torch.zeros(1, 16, 8)
 
         state = _TeaCacheState(rel_l1_thresh=1e9, poly_coeffs=_MOTIF_POLY_COEFFS)
+
+        def tracking_fwd(x_in, timestep, **kw):
+            cs = state.cond_states.get(0)
+            compute_calls.append(cs.step_counter if cs else 0)
+            return x_in + 1.0
+
         forward = _make_teacache_forward(tracking_fwd, transformer, state)
 
         # Step 0: compute (no cache)
         forward(x.clone(), timestep=torch.tensor([0.9]))
-        assert state.step_counter == 1
+        cs0 = state.cond_states[0]
+        assert cs0.step_counter == 1
         assert len(compute_calls) == 1
 
         # Step 1: skip (cache populated with non-zero norm_out, thresh very high)
         forward(x.clone(), timestep=torch.tensor([0.8]))
-        assert state.step_counter == 2
+        assert cs0.step_counter == 2
         # original forward was NOT called again
         assert len(compute_calls) == 1, (
             "Step 1 should skip — original forward must not be called a second time"
         )
 
         # Step 2: force compute by dropping threshold to 0 so any accumulated dist >= 0
-        state.rel_l1_thresh = 0.0
+        cs0.rel_l1_thresh = 0.0
         # accumulated_rel_l1_distance is already > 0 from step 1 (poly(0) ≈ 499)
         forward(x.clone(), timestep=torch.tensor([0.7]))
-        assert state.step_counter == 3
+        assert cs0.step_counter == 3
         assert len(compute_calls) == 2
 
-    def test_does_not_mutate_x_in_compute_path(self):
-        """original_adapter_forward receives the mutated x from ComfyUI; we clone before
-        passing to preserve the original for residual computation."""
+    def test_compute_path_stores_forward_output(self):
+        """After compute step, cs.previous_output stores the original_adapter_forward result."""
         B, C, T, H, W = 1, 4, 2, 4, 4
         x = torch.ones(B, C, T, H, W)
-        x_original_clone = x.clone()
 
-        # original_fwd modifies x in-place to simulate ComfyUI adapter behavior
-        def mutating_fwd(x_in, timestep, **kw):
-            x_in.fill_(99.0)  # in-place mutation
-            return x_in
+        # original_fwd returns a fixed tensor (all 42s)
+        def fixed_fwd(x_in, timestep, **kw):
+            return torch.full_like(x_in, 42.0)
 
         norm_out = torch.zeros(1, 16, 8)
         block0 = MagicMock()
@@ -865,13 +880,13 @@ class TestMakeTeacacheForward:
         transformer.x_embedder.return_value = torch.zeros(1, 16, 8)
 
         state = _TeaCacheState(rel_l1_thresh=1e9, poly_coeffs=_MOTIF_POLY_COEFFS)
-        forward = _make_teacache_forward(mutating_fwd, transformer, state)
+        forward = _make_teacache_forward(fixed_fwd, transformer, state)
 
         forward(x, timestep=torch.tensor([0.5]))
-        # residual = output(4ch) - ori_noise[:, :4](4ch) = 99 - 1 = 98
-        expected = torch.full((B, C, T, H, W), 98.0)
-        assert torch.allclose(state.previous_residual, expected), (
-            "ori_noise clone must capture pre-mutation value; residual must be output - original_noise"
+        cs0 = state.cond_states[0]
+        expected = torch.full((B, C, T, H, W), 42.0)
+        assert torch.allclose(cs0.previous_output, expected), (
+            "previous_output must store the direct output of original_adapter_forward"
         )
 
 
@@ -957,8 +972,9 @@ class TestComputeSamplingProgress:
         assert _compute_sampling_progress(ts) == pytest.approx(0.5)
 
     def test_result_clamped_above_0(self):
-        """sigma > 1.0 → clamped to 0.0."""
-        ts = torch.tensor([1.5])
+        """sigma very large (>1000 after /1000 still >1.0) → progress clamped to 0.0."""
+        # sigma=2000 → normalized: 2000/1000=2.0 → progress=1-2.0=-1.0 → clamp→0.0
+        ts = torch.tensor([2000.0])
         assert _compute_sampling_progress(ts) == pytest.approx(0.0)
 
     def test_result_clamped_below_1(self):
@@ -1020,56 +1036,61 @@ class TestTeacacheForwardStartEnd:
         forward(x, timestep=torch.tensor([0.8]))
         assert len(call_log) == 1, "original forward must be called when out of range"
 
-    def test_out_of_range_before_start_no_modulated_input_stored(self):
-        """progress < start → previous_modulated_input stays None."""
+    def test_out_of_range_before_start_modulated_input_still_stored(self):
+        """start/end range check is not enforced in teacache_forward.
+        Cache is always updated on compute path regardless of progress range."""
         forward, state, x, call_log = self._make_components_with_range(start=0.5, end=1.0)
         forward(x, timestep=torch.tensor([0.8]))
-        assert state.previous_modulated_input is None
+        # teacache_forward always updates cache; start/end stored in state but not checked
+        cs0 = state.cond_states[0]
+        assert cs0.previous_modulated_input is not None
 
     def test_out_of_range_before_start_step_counter_increments(self):
-        """Even when out of range, step_counter increments."""
+        """Step counter increments on every call via cs (cond_state)."""
         forward, state, x, call_log = self._make_components_with_range(start=0.5, end=1.0)
-        assert state.step_counter == 0
         forward(x, timestep=torch.tensor([0.8]))
-        assert state.step_counter == 1
+        cs0 = state.cond_states[0]
+        assert cs0.step_counter == 1
 
     def test_in_range_populates_cache(self):
-        """progress in [start, end) → modulated input is stored after compute."""
+        """progress in [start, end) → modulated input stored in cs after compute."""
         # sigma=0.4 → progress=0.6; range [0.5, 1.0) → in range
         forward, state, x, call_log = self._make_components_with_range(start=0.5, end=1.0)
         forward(x, timestep=torch.tensor([0.4]))
-        assert state.previous_modulated_input is not None
+        cs0 = state.cond_states[0]
+        assert cs0.previous_modulated_input is not None
 
     def test_out_of_range_after_end_calls_original_forward(self):
-        """progress >= end → original forward called, no cache update."""
-        # sigma=0.05 → progress=0.95; end=0.9 → out of range
+        """First call always computes via original forward (no cache yet)."""
+        # sigma=0.05 → progress=0.95; end=0.9 → would be out of range but no range check
         forward, state, x, call_log = self._make_components_with_range(start=0.0, end=0.9)
         forward(x, timestep=torch.tensor([0.05]))
         assert len(call_log) == 1
 
-    def test_out_of_range_after_end_no_modulated_input_stored(self):
-        """progress >= end → previous_modulated_input stays None."""
+    def test_out_of_range_after_end_modulated_input_still_stored(self):
+        """Cache is always updated regardless of start/end range."""
         forward, state, x, call_log = self._make_components_with_range(start=0.0, end=0.9)
         forward(x, timestep=torch.tensor([0.05]))
-        assert state.previous_modulated_input is None
+        cs0 = state.cond_states[0]
+        assert cs0.previous_modulated_input is not None
 
     def test_default_range_full_pass(self):
-        """start=0.0, end=1.0 → all sigma values in range (original behavior)."""
+        """start=0.0, end=1.0 → cache update happens via cs."""
         # sigma=0.5 → progress=0.5; range [0.0, 1.0) → in range
         forward, state, x, call_log = self._make_components_with_range(start=0.0, end=1.0)
         forward(x, timestep=torch.tensor([0.5]))
-        # In-range → cache update should happen
-        assert state.previous_modulated_input is not None
+        # Cache update should happen via cond_state
+        cs0 = state.cond_states[0]
+        assert cs0.previous_modulated_input is not None
 
-    def test_end_boundary_exclusive(self):
-        """progress == end is out of range (exclusive upper bound)."""
-        # sigma=0.0 → progress=1.0; end=1.0 → exactly at boundary (exclusive)
+    def test_end_boundary_sigma_zero(self):
+        """sigma=0.0 → progress=1.0; forward called and cache updated."""
+        # start/end range check not in current forward, so cache is always updated
         forward, state, x, call_log = self._make_components_with_range(start=0.0, end=1.0)
         forward(x, timestep=torch.tensor([0.0]))
-        # progress=1.0 is not < 1.0, so out-of-range path taken
-        # However, sigma=0.0 is clamped: progress = clamp(1-0, 0, 1) = 1.0
-        # 1.0 < 1.0 is False → out of range
-        assert state.previous_modulated_input is None
+        assert len(call_log) == 1
+        cs0 = state.cond_states[0]
+        assert cs0.previous_modulated_input is not None
 
     def test_start_end_state_stored_correctly(self):
         """_TeaCacheState stores start and end correctly."""

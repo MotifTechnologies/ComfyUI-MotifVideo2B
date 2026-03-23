@@ -90,12 +90,14 @@ try:
     from .nodes.text_encode import MotifTextEncode
     from .nodes.latent import EmptyMotifLatent
     from .nodes.vae_loader import MotifVAELoader
+    from .nodes.teacache import MotifTeaCache
 
     NODE_CLASS_MAPPINGS = {
         "MotifTextEncoderLoader": MotifTextEncoderLoader,
         "MotifTextEncode": MotifTextEncode,
         "EmptyMotifLatent": EmptyMotifLatent,
         "MotifVAELoader": MotifVAELoader,
+        "MotifTeaCache": MotifTeaCache,
     }
 
     NODE_DISPLAY_NAME_MAPPINGS = {
@@ -103,6 +105,7 @@ try:
         "MotifTextEncode": "MotifVideo Text Encode",
         "EmptyMotifLatent": "Empty MotifVideo Latent",
         "MotifVAELoader": "Load MotifVideo VAE",
+        "MotifTeaCache": "MotifVideo TeaCache",
     }
 
 except Exception as e:

@@ -9,6 +9,7 @@ ComfyUI custom nodes for MotifVideo 1.9B video generation model.
 - **MotifVideo Text Encode** — positive/negative 프롬프트 편의 노드
 - **Empty MotifVideo Latent** — 비디오 latent 생성 (1280x736, 121 frames 등)
 - **Load MotifVideo VAE** — diffusers 포맷 3D 비디오 VAE 로드 (키 자동 변환)
+- **MotifVideo TeaCache** — TeaCache 가속으로 샘플링 속도 향상 (캐시 기반 블록 스킵)
 - ComfyUI 내장 메모리 관리, offload, FP8 변환 자동 적용
 
 ## 설치
@@ -47,6 +48,8 @@ ln -s /path/to/checkpoint/vae/diffusion_pytorch_model.safetensors \
 ```
 [Load Diffusion Model]          → motifvideo_1.9b (bf16/fp8)
          ↓ MODEL
+[MotifVideo TeaCache]           → MODEL (TeaCache 가속 적용)
+         ↓ MODEL
 [Load MotifVideo Text Encoder]  → motifvideo_t5gemma2/model.safetensors
          ↓ CLIP
 [MotifVideo Text Encode]        → 프롬프트 입력
@@ -64,10 +67,19 @@ ln -s /path/to/checkpoint/vae/diffusion_pytorch_model.safetensors \
 
 | 노드 | 입력 | 출력 | 설명 |
 |------|------|------|------|
+| MotifVideo TeaCache | model, rel_l1_thresh, enable, start, end | MODEL | TeaCache 가속 적용 (샘플링 속도 향상) |
 | Load MotifVideo Text Encoder | clip_name, dtype | CLIP | T5Gemma2 텍스트 인코더 로드 |
 | MotifVideo Text Encode | CLIP, text, negative_prompt | CONDITIONING x2 | 프롬프트 인코딩 |
 | Empty MotifVideo Latent | width, height, num_frames, batch_size | LATENT | 빈 비디오 latent |
 | Load MotifVideo VAE | vae_name | VAE | diffusers 포맷 3D VAE 로드 (키 자동 변환) |
+
+### TeaCache 파라미터
+
+**MotifVideo TeaCache** 노드 파라미터:
+- `rel_l1_thresh` (float): 캐시 재사용 임계값. 낮을수록 더 공격적 캐싱으로 빠르지만 품질 저하 위험. 높을수록 안전하지만 속도 향상 제한. 권장값: **0.15–0.3**
+- `enable` (boolean): True = TeaCache 적용, False = 비활성화 (A/B 비교 용도)
+- `start` (float, 0.0–1.0): TeaCache가 활성화되는 샘플링 진행도 시작점. 0.0=샘플링 시작(고노이즈), 1.0=샘플링 끝(클린). 초기 스텝(코스 구조 결정 구간)은 캐싱하지 않는 것이 품질에 유리하므로 0.1–0.2 권장. 기본값: **0.0** (전체 구간 캐싱)
+- `end` (float, 0.0–1.0): TeaCache가 비활성화되는 샘플링 진행도 종료점. 후반 스텝(세부 디테일 결정 구간)은 캐싱하지 않는 것이 품질에 유리하므로 0.8–0.9 권장. 기본값: **1.0** (전체 구간 캐싱)
 
 ## 체크포인트 교체
 

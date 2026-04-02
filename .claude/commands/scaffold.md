@@ -20,9 +20,9 @@
 │
 ├── .claude/
 │   ├── settings.json
-│   ├── agents/   (planner, developer, refactorer, reviewer, tester)
-│   ├── commands/ (task-plan, scaffold, restore, check)
-│   └── skills/   (타입에 맞는 도메인 skill만)
+│   ├── agents/   (planner, developer, tester, reviewer, recommender, analyzer, atlassian-manager, github-manager, researcher, doc-writer, knowledge-writer, migrator)
+│   ├── commands/ (task-plan, scaffold, restore, check, auto, issue, migrate)
+│   └── skills/   (version-control, plan-writing, review-rules, testing, error-logging, profiling, debug, dependency-check, research, doc-update, jira-workflow, machine-profile, knowledge-management, migration)
 │
 ├── .plans/            (.gitkeep)
 ├── .manuals/errors/   (.gitkeep)
@@ -37,9 +37,8 @@
 ```
 
 ## 타입별 차이
-- `data-curation`: `.claude/skills/data-curation.md` 포함
-- `model-training`: `.claude/skills/distributed-training.md` 포함
-- `general`: skill 파일 없이 빈 `.claude/skills/` 만 생성
+- `data-curation` / `model-training`: 해당 타입에 맞는 도메인 skill을 `.claude/skills/`에 직접 추가
+- `general`: 기본 skill 세트만 포함 (추가 도메인 skill 없음)
 
 ## pyproject.toml 템플릿
 ```toml

@@ -21,9 +21,8 @@ tools:
 - 내는 것: 갱신 완료 보고 → 메인에게 전달
 
 ## 규칙
+- common.md 필수 참조 (규칙 A·B·C·D 적용)
 - 수정 가능: README, 패키지 docs (src/*/), .manuals/ 내부 문서, .plans/ 상태 스냅샷
-- 수정 불가: CLAUDE.md, agents/*.md, settings.json, hooks/
-- 사용자와 직접 소통 불가. 메인 경유만
 - 외부 연동(Jira, Confluence)은 atlassian-manager 담당
 
 ## 역할

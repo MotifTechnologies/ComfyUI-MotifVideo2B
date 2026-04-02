@@ -81,31 +81,7 @@ fi
 # 체인 상태 확인 (.hook-state에서 chain_state 읽기)
 STATE_FILE="$PROJECT_DIR/.hook-state"
 LOCK_FILE="${STATE_FILE}.lock"
-
-# === flock 가용성 체크 ===
-if command -v flock >/dev/null 2>&1; then
-  HAS_FLOCK=1
-else
-  HAS_FLOCK=0
-fi
-
-acquire_lock() {
-  # $1: lock mode (-x exclusive, -s shared)
-  if [ "$HAS_FLOCK" = "1" ]; then
-    exec 9>"$LOCK_FILE"
-    if ! flock "$1" -w 3 9; then
-      exec 9>&-
-      return 1
-    fi
-  fi
-  return 0
-}
-
-release_lock() {
-  if [ "$HAS_FLOCK" = "1" ]; then
-    exec 9>&-
-  fi
-}
+source "$(dirname "$0")/lib/common.sh"
 
 CHAIN_STATE=""
 if [[ -f "$STATE_FILE" ]]; then
@@ -119,13 +95,19 @@ if [[ -f "$STATE_FILE" ]]; then
   release_lock
 fi
 
-# chain_state별 경고 또는 차단
+# chain_state별 차단
 case "$CHAIN_STATE" in
   developer_done)
-    echo "⚠️ [plan-gate] tester가 아직 호출되지 않았습니다. tester를 먼저 호출하세요." >&2
+    echo "🚫 [plan-gate] 차단: developer 완료 후 tester가 아직 호출되지 않았습니다. tester를 먼저 호출하세요." >&2
+    exit 2
     ;;
   tester_done)
-    echo "⚠️ [plan-gate] reviewer가 아직 호출되지 않았습니다. reviewer를 먼저 호출하세요." >&2
+    echo "🚫 [plan-gate] 차단: tester 완료 후 reviewer가 아직 호출되지 않았습니다. reviewer를 먼저 호출하세요." >&2
+    exit 2
+    ;;
+  planner_done)
+    echo "🚫 [plan-gate] 차단: planner 완료 후 reviewer가 아직 호출되지 않았습니다. reviewer를 먼저 호출하세요." >&2
+    exit 2
     ;;
   reviewer_revise)
     echo "🚫 [plan-gate] 차단: reviewer가 REVISE 판정했습니다. 수정 후 reviewer를 재호출하세요." >&2

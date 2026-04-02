@@ -8,37 +8,10 @@ set -eo pipefail
 PROJECT_DIR="${CLAUDE_PROJECT_DIR:-.}"
 STATE_FILE="$PROJECT_DIR/.hook-state"
 LOCK_FILE="${STATE_FILE}.lock"
-
-# === flock 가용성 체크 ===
-if command -v flock >/dev/null 2>&1; then
-  HAS_FLOCK=1
-else
-  HAS_FLOCK=0
-fi
-
-acquire_lock() {
-  # $1: lock mode (-x exclusive, -s shared)
-  if [ "$HAS_FLOCK" = "1" ]; then
-    exec 9>"$LOCK_FILE"
-    if ! flock "$1" -w 3 9; then
-      exec 9>&-
-      return 1
-    fi
-  fi
-  return 0
-}
-
-release_lock() {
-  if [ "$HAS_FLOCK" = "1" ]; then
-    exec 9>&-
-  fi
-}
+source "$(dirname "$0")/lib/common.sh"
 
 # === stdin에서 JSON 읽기 ===
 INPUT=$(cat)
-
-# === JSON 필드 추출 유틸 로드 ===
-source "$(dirname "$0")/lib/common.sh"
 
 # === git commit인지 확인 (early return — 성능 중요) ===
 COMMAND=$(extract_field "$INPUT" '.tool_input.command')

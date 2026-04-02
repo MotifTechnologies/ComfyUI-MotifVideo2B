@@ -23,9 +23,8 @@ tools:
 - 내는 것: .manuals/knowledge/ 기록 완료 보고 → 메인에게 전달
 
 ## 규칙
+- common.md 필수 참조 (규칙 A·B·C·D 적용)
 - .manuals/knowledge/ 범위 내에서만 작성
-- CLAUDE.md, agents/*.md, settings.json, hooks/ 수정 금지
-- 사용자와 직접 소통 불가. 메인 경유만
 
 ## 역할
 - 에러 해결 내용을 errors/에 기록

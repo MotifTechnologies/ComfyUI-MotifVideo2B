@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # agent-tracker.sh — PostToolUse:Agent hook
 # Agent 도구 호출 완료 시 에이전트 타입을 추적하여 .hook-state에 기록
-# 추적 대상: developer, tester, reviewer, recommender (4개만)
+# 추적 대상: planner, developer, tester, reviewer, recommender (5개)
 # 체인 상태 전이 + stderr 리마인더 출력
 
 set -eo pipefail
@@ -9,44 +9,16 @@ set -eo pipefail
 PROJECT_DIR="${CLAUDE_PROJECT_DIR:-.}"
 STATE_FILE="$PROJECT_DIR/.hook-state"
 LOCK_FILE="${STATE_FILE}.lock"
-
-# === flock 가용성 체크 ===
-if command -v flock >/dev/null 2>&1; then
-  HAS_FLOCK=1
-else
-  HAS_FLOCK=0
-fi
-
-acquire_lock() {
-  # $1: lock mode (-x exclusive, -s shared)
-  if [ "$HAS_FLOCK" = "1" ]; then
-    exec 9>"$LOCK_FILE"
-    if ! flock "$1" -w 3 9; then
-      # timeout — FD 닫고 잠금 없이 진행
-      exec 9>&-
-      return 1
-    fi
-  fi
-  return 0
-}
-
-release_lock() {
-  if [ "$HAS_FLOCK" = "1" ]; then
-    exec 9>&-
-  fi
-}
+source "$(dirname "$0")/lib/common.sh"
 
 # === stdin에서 JSON 읽기 ===
 INPUT=$(cat)
-
-# === JSON 필드 추출 유틸 로드 ===
-source "$(dirname "$0")/lib/common.sh"
 
 SUBAGENT_TYPE=$(extract_field "$INPUT" '.tool_input.subagent_type')
 
 # === 추적 대상 필터 ===
 case "$SUBAGENT_TYPE" in
-  developer|tester|reviewer|recommender)
+  planner|developer|tester|reviewer|recommender)
     ;;
   *)
     # 추적 대상이 아닌 에이전트 → 무시
@@ -73,6 +45,9 @@ fi
 # === 체인 상태 결정 ===
 CHAIN_STATE=""
 case "$SUBAGENT_TYPE" in
+  planner)
+    CHAIN_STATE="planner_done"
+    ;;
   developer)
     CHAIN_STATE="developer_done"
     ;;
@@ -114,6 +89,9 @@ release_lock
 
 # === stderr 리마인더 출력 ===
 case "$CHAIN_STATE" in
+  planner_done)
+    echo "⚠️ [CHAIN] planner 완료. reviewer 호출이 필요합니다." >&2
+    ;;
   developer_done)
     echo "⚠️ [CHAIN] developer 완료. tester 호출이 필요합니다." >&2
     ;;

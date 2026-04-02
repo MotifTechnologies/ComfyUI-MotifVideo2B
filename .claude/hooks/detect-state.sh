@@ -10,31 +10,7 @@ PROJECT_DIR="${CLAUDE_PROJECT_DIR:-.}"
 PLANS_DIR="$PROJECT_DIR/.plans"
 STATE_FILE="$PROJECT_DIR/.hook-state"
 LOCK_FILE="${STATE_FILE}.lock"
-
-# === flock 가용성 체크 ===
-if command -v flock >/dev/null 2>&1; then
-  HAS_FLOCK=1
-else
-  HAS_FLOCK=0
-fi
-
-acquire_lock() {
-  # $1: lock mode (-x exclusive, -s shared)
-  if [ "$HAS_FLOCK" = "1" ]; then
-    exec 9>"$LOCK_FILE"
-    if ! flock "$1" -w 3 9; then
-      exec 9>&-
-      return 1
-    fi
-  fi
-  return 0
-}
-
-release_lock() {
-  if [ "$HAS_FLOCK" = "1" ]; then
-    exec 9>&-
-  fi
-}
+source "$(dirname "$0")/lib/common.sh"
 
 # === .plans/ 최신 폴더 찾기 (체크리스트 있는 것만) ===
 if [[ ! -d "$PLANS_DIR" ]]; then
@@ -168,6 +144,9 @@ if [[ "$CURRENT_CHECKED" -gt "${checked_count:-0}" ]]; then
     reviewer_passed|chain_complete)
       # 체인 완료 — 추가 경고 없음
       ;;
+    planner_done)
+      echo "[HOOK:CHAIN_INCOMPLETE] planner 완료 후 reviewer 미호출. [x] 마킹 전 reviewer를 호출하세요." >&2
+      ;;
     developer_done)
       echo "[HOOK:CHAIN_INCOMPLETE] tester→reviewer 체인 미완료. [x] 마킹 전 tester, reviewer를 호출하세요." >&2
       ;;
@@ -192,6 +171,12 @@ fi
 if [[ "$CHECKLIST_EXISTS" == "true" && "${checked_count:-0}" -eq 0 && "$CURRENT_TOTAL" -gt 0 && "${total_count:-0}" -eq 0 && "${jira_asked:-false}" == "false" ]]; then
   echo "[HOOK:PLAN_CREATED]" >&2
   jira_asked=true
+  skip_plan_modified=true
+fi
+
+# f. planner_done 상태에서 reviewer 미호출 감지
+if [[ "$skip_plan_modified" == "false" && "${chain_state:-}" == "planner_done" ]]; then
+  echo "[HOOK:CHAIN_INCOMPLETE] reviewer 미호출. planner 완료 후 reviewer를 호출하세요." >&2
   skip_plan_modified=true
 fi
 

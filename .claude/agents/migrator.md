@@ -19,9 +19,8 @@ skills:
 - 내는 것: 이식/업데이트 완료 보고 -> 메인에게 전달
 
 ## 규칙
+- common.md 필수 참조 (규칙 A·B·C·D 적용)
 - hooks/, settings.json 직접 수정 금지 (setup.sh 경유만 허용)
-- CLAUDE.md, agents/*.md 직접 수정 금지
-- 사용자와 직접 소통 불가. 메인 경유만
 - PROTECTED_PATHS는 절대 건드리지 않음 (migration 스킬 참조)
 - 모든 분류 결과는 사용자 확인 후 적용. 자동 적용 절대 금지
 
@@ -394,4 +393,3 @@ ssh -T git@github.com
 - hooks/, settings.json 직접 수정 (setup.sh 경유 필수)
 - 사용자 확인 없이 분류 결과 자동 적용
 - _old_claude_files/ 자동 삭제
-- 사용자에게 직접 소통 (메인 경유만 허용)

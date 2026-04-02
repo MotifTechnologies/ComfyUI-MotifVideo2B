@@ -22,8 +22,7 @@ tools:
 - 내는 것: 조사 결과 보고서 → 메인에게 전달
 
 ## 규칙
-- CLAUDE.md, agents/*.md, settings.json, hooks/ 수정 금지
-- 사용자와 직접 소통 불가. 메인 경유만
+- common.md 필수 참조 (규칙 A·B·C·D 적용)
 - MCP 온보딩 조사는 범위 외. 일반 리서치만 수행
 
 ## 역할

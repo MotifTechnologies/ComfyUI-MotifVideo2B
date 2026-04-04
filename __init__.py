@@ -49,6 +49,20 @@ try:
             # Must match training config. Both base and cross_attn configs use 8.
             num_decoder_layers = 8
 
+            # Dynamically detect cross-attention presence from state_dict keys.
+            # Keys are present only in cross-attn checkpoints; absence means False
+            # (backward-compatible with base checkpoints).
+            single_cross_attn_key = '{}single_transformer_blocks.0.cross_attn_query_proj.weight'.format(key_prefix)
+            dual_cross_attn_key = '{}transformer_blocks.0.cross_attn_query_proj.weight'.format(key_prefix)
+            single_cross_attn_w = state_dict.get(single_cross_attn_key)
+            dual_cross_attn_w = state_dict.get(dual_cross_attn_key)
+            enable_text_cross_attention_single = (
+                single_cross_attn_w is not None and single_cross_attn_w.numel() > 0
+            )
+            enable_text_cross_attention_dual = (
+                dual_cross_attn_w is not None and dual_cross_attn_w.numel() > 0
+            )
+
             # in_channels from x_embedder
             x_embed_w = state_dict['{}x_embedder.proj.weight'.format(key_prefix)]
             in_channels = x_embed_w.shape[1]
@@ -73,8 +87,8 @@ try:
                 "patch_size_t": 1,
                 "rope_axes_dim": [16, 56, 56],
                 "rope_theta": 10000.0,
-                "cross_attention_dual": False,
-                "cross_attention_single": False,
+                "enable_text_cross_attention_dual": enable_text_cross_attention_dual,
+                "enable_text_cross_attention_single": enable_text_cross_attention_single,
             }
 
         # Not a MotifVideo model — fall through to original detection logic.

@@ -27,7 +27,9 @@ try:
 
             # Dynamically detect architecture params from state_dict shapes.
             inner_dim = attn_k_w.shape[0]
-            attention_head_dim = 128  # rope_axes_dim sum: 16+56+56
+            # Architecture constant: head_dim = sum(rope_axes_dim) = 16+56+56 = 128.
+            # Not derivable from state_dict; tied to RoPE design.
+            attention_head_dim = 128
             num_attention_heads = inner_dim // attention_head_dim
             text_embed_dim = context_w.shape[1]
             image_embed_dim = image_w.shape[1]
@@ -39,8 +41,9 @@ try:
             num_single_layers = 0
             while '{}single_transformer_blocks.{}.attn.to_k.weight'.format(key_prefix, num_single_layers) in state_dict:
                 num_single_layers += 1
-            # Decoder reuses last N single_transformer_blocks (no separate keys).
-            # Must match training config. Both base and cross_attn configs use 8.
+            # Architecture constant: decoder reuses last N single_transformer_blocks.
+            # No separate keys in state_dict to distinguish encoder/decoder blocks.
+            # Not derivable from weights; must match training config.
             num_decoder_layers = 8
 
             # Dynamically detect cross-attention presence from state_dict keys.
@@ -61,10 +64,14 @@ try:
             x_embed_w = state_dict['{}x_embedder.proj.weight'.format(key_prefix)]
             in_channels = x_embed_w.shape[1]
 
-            # out_channels: proj_out.weight shape [patch_size^2 * out_channels, inner_dim]
+            # patch_size / patch_size_t from x_embedder Conv3d kernel shape:
+            # weight shape = [embed_dim, in_ch, patch_size_t, patch_size, patch_size]
+            patch_size_t = x_embed_w.shape[2]
+            patch_size = x_embed_w.shape[3]
+
+            # out_channels: proj_out.weight shape [patch_size_t * patch_size^2 * out_channels, inner_dim]
             proj_out_w = state_dict['{}proj_out.weight'.format(key_prefix)]
-            patch_size = 2  # MotifVideo fixed spatial patch
-            out_channels = proj_out_w.shape[0] // (patch_size * patch_size)
+            out_channels = proj_out_w.shape[0] // (patch_size_t * patch_size * patch_size)
 
             return {
                 "image_model": "motif_video",
@@ -78,7 +85,9 @@ try:
                 "text_embed_dim": text_embed_dim,
                 "image_embed_dim": image_embed_dim,
                 "patch_size": patch_size,
-                "patch_size_t": 1,
+                "patch_size_t": patch_size_t,
+                # Architecture constants: RoPE config is not stored in state_dict.
+                # rope_axes_dim must sum to attention_head_dim (128).
                 "rope_axes_dim": [16, 56, 56],
                 "rope_theta": 10000.0,
                 "enable_text_cross_attention_dual": enable_text_cross_attention_dual,

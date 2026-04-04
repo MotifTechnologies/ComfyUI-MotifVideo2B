@@ -94,9 +94,24 @@ ln -s /path/to/new_checkpoint/transformer/diffusion_pytorch_model.safetensors \
 
 ComfyUI에서 `Load Diffusion Model` → `motifvideo_new` 선택.
 
+### 기본 체크포인트 변경 안내 (2026-04-04)
+
+기본 체크포인트(`motifvideo_1.9b`)가 cross-attn fine-tune 체크포인트(720p-6_400)로 변경되었습니다.
+
+- 새 기본 체크포인트: `motif-video-1.9b-720p-6_400` (cross-attn fine-tune)
+  - `enable_text_cross_attention_single=True` 지원
+  - state_dict 키 기반 자동 감지 (`single_transformer_blocks.0.cross_attn_query_proj.weight`)
+- 이전 기본 체크포인트(`motifvideo_1.9b`)를 계속 사용하려면 별도 심링크 필요:
+
+```bash
+ln -s /path/to/original_checkpoint/transformer/diffusion_pytorch_model.safetensors \
+  models/diffusion_models/motifvideo_1.9b_original.safetensors
+```
+
 ## 아키텍처
 
 - Transformer: MotifVideoTransformer3DModel (motif_core — 직접 import, 코드 복사 X)
+  - cross-attn variant 자동 감지: state_dict 키(`single_transformer_blocks.0.cross_attn_query_proj.weight`, `transformer_blocks.0.cross_attn_query_proj.weight`) 기반으로 `enable_text_cross_attention_single/dual` 자동 설정
 - Text Encoder: T5Gemma2Model (transformers 5.0.0+)
 - VAE: AutoencoderKLWan (diffusers 키 자동 변환 → ComfyUI WAN VAE)
 - Scheduler: FlowMatchEulerDiscreteScheduler (KSampler 연동)
@@ -104,3 +119,4 @@ ComfyUI에서 `Load Diffusion Model` → `motifvideo_new` 선택.
 ## Jira
 
 - [MM-959](https://motiftech-kr-team.atlassian.net/browse/MM-959)
+- [MM-1036](https://motiftech-kr-team.atlassian.net/browse/MM-1036)

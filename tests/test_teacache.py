@@ -1776,3 +1776,150 @@ class TestCalibrationApplyTeacache:
         )
         # inner_model.diffusion_model must be the same object as transformer
         assert inner_model.diffusion_model is transformer
+
+
+# ===========================================================================
+# 17. TeaCache + cross-attn transformer 조합
+# ===========================================================================
+
+def _make_cross_attn_transformer(enable_single: bool = True, enable_dual: bool = False):
+    """Build a mock transformer that simulates a cross-attn variant.
+
+    cross-attn 체크포인트에서 로드된 transformer는 추가 속성
+    (enable_text_cross_attention_single, enable_text_cross_attention_dual)을
+    가질 수 있다. TeaCache monkey-patch는 이 속성과 무관하게 동작해야 한다.
+    """
+    block0 = MagicMock(name="block0")
+    transformer = MagicMock(name="cross_attn_transformer")
+    transformer.transformer_blocks = [block0]
+    transformer._teacache_enabled = False
+    # cross-attn 파라미터 (실제 모델에 존재하는 속성 시뮬레이션)
+    transformer.enable_text_cross_attention_single = enable_single
+    transformer.enable_text_cross_attention_dual = enable_dual
+
+    inner_model = MagicMock(name="inner_model")
+    inner_model.diffusion_model = transformer
+
+    patched_model = MagicMock(name="patched_model")
+    patched_model.model = inner_model
+
+    model = MagicMock(name="model")
+    model.clone.return_value = patched_model
+
+    return model, patched_model, inner_model, transformer
+
+
+class TestTeaCacheCrossAttnCompatibility:
+    """TeaCache monkey-patch must work regardless of cross-attn configuration.
+
+    cross-attn fine-tune 체크포인트(enable_text_cross_attention_single=True)에서도
+    TeaCache가 정상 동작하는지 검증한다. TeaCache는 transformer.forward를
+    교체하는 방식이므로 cross-attn 파라미터와 무관해야 한다.
+    """
+
+    def test_patches_cross_attn_transformer(self):
+        """cross-attn 속성이 있는 transformer에도 TeaCache가 패치된다."""
+        node = MotifTeaCache()
+        model, patched_model, inner_model, transformer = _make_cross_attn_transformer(
+            enable_single=True, enable_dual=False
+        )
+        original_forward = transformer.forward
+        node.apply_teacache(model=model, rel_l1_thresh=0.3, enable=True)
+        assert transformer.forward is not original_forward, (
+            "TeaCache must replace forward on cross-attn transformer"
+        )
+
+    def test_enabled_flag_set_on_cross_attn_transformer(self):
+        """cross-attn transformer에서도 _teacache_enabled=True로 마킹된다."""
+        node = MotifTeaCache()
+        model, patched_model, inner_model, transformer = _make_cross_attn_transformer(
+            enable_single=True, enable_dual=False
+        )
+        node.apply_teacache(model=model, rel_l1_thresh=0.3, enable=True)
+        assert transformer._teacache_enabled is True
+
+    def test_state_attached_to_cross_attn_transformer(self):
+        """cross-attn transformer에 _TeaCacheState가 올바르게 부착된다."""
+        node = MotifTeaCache()
+        model, patched_model, inner_model, transformer = _make_cross_attn_transformer(
+            enable_single=True, enable_dual=False
+        )
+        node.apply_teacache(model=model, rel_l1_thresh=0.42, enable=True)
+        assert hasattr(transformer, "_teacache_state")
+        assert isinstance(transformer._teacache_state, _TeaCacheState)
+        assert transformer._teacache_state.rel_l1_thresh == 0.42
+
+    def test_cross_attn_attributes_not_modified(self):
+        """TeaCache 적용 후 cross-attn 파라미터가 변경되지 않아야 한다."""
+        node = MotifTeaCache()
+        model, patched_model, inner_model, transformer = _make_cross_attn_transformer(
+            enable_single=True, enable_dual=False
+        )
+        node.apply_teacache(model=model, rel_l1_thresh=0.3, enable=True)
+        assert transformer.enable_text_cross_attention_single is True, (
+            "TeaCache must not modify enable_text_cross_attention_single"
+        )
+        assert transformer.enable_text_cross_attention_dual is False, (
+            "TeaCache must not modify enable_text_cross_attention_dual"
+        )
+
+    def test_dual_cross_attn_transformer_also_patched(self):
+        """dual cross-attn 속성이 있어도 TeaCache 패치가 동작한다."""
+        node = MotifTeaCache()
+        model, patched_model, inner_model, transformer = _make_cross_attn_transformer(
+            enable_single=True, enable_dual=True
+        )
+        node.apply_teacache(model=model, rel_l1_thresh=0.3, enable=True)
+        assert transformer._teacache_enabled is True
+        assert isinstance(transformer._teacache_state, _TeaCacheState)
+
+    def test_returns_patched_model_for_cross_attn_transformer(self):
+        """cross-attn transformer에서도 반환값은 cloned patched_model이다."""
+        node = MotifTeaCache()
+        model, patched_model, inner_model, transformer = _make_cross_attn_transformer(
+            enable_single=True, enable_dual=False
+        )
+        result = node.apply_teacache(model=model, rel_l1_thresh=0.3, enable=True)
+        assert result[0] is patched_model
+        assert result[0] is not model
+
+    def test_cross_attn_forward_is_callable_after_patch(self):
+        """패치 후 transformer.forward가 호출 가능한 callable이어야 한다."""
+        node = MotifTeaCache()
+        model, patched_model, inner_model, transformer = _make_cross_attn_transformer(
+            enable_single=True, enable_dual=False
+        )
+        node.apply_teacache(model=model, rel_l1_thresh=0.3, enable=True)
+        assert callable(transformer.forward), (
+            "patched forward on cross-attn transformer must be callable"
+        )
+
+    def test_cross_attn_idempotency_guard_works(self):
+        """cross-attn transformer에서도 idempotency guard가 동작한다."""
+        node = MotifTeaCache()
+        model, patched_model, inner_model, transformer = _make_cross_attn_transformer(
+            enable_single=True, enable_dual=False
+        )
+        # 첫 번째 패치
+        node.apply_teacache(model=model, rel_l1_thresh=0.3, enable=True)
+        forward_after_first = transformer.forward
+
+        # 두 번째 패치 (같은 transformer를 참조)
+        patched_model2 = MagicMock(name="patched_model2")
+        patched_model2.model = inner_model
+        model2 = MagicMock(name="model2")
+        model2.clone.return_value = patched_model2
+
+        node.apply_teacache(model=model2, rel_l1_thresh=0.5, enable=True)
+        assert transformer.forward is forward_after_first, (
+            "Idempotency guard must prevent double-patching on cross-attn transformer"
+        )
+
+    def test_cross_attn_transformer_state_threshold_matches(self):
+        """cross-attn transformer에서 threshold가 state에 올바르게 저장된다."""
+        node = MotifTeaCache()
+        model, patched_model, inner_model, transformer = _make_cross_attn_transformer(
+            enable_single=True, enable_dual=False
+        )
+        node.apply_teacache(model=model, rel_l1_thresh=0.77, enable=True)
+        assert transformer._teacache_state.rel_l1_thresh == pytest.approx(0.77)

@@ -4,6 +4,7 @@ Covers:
   1. _make_comfyui_forward: argument mapping, return value, ignored kwargs
   2. state_dict key prefix: checkpoint has no 'transformer.' prefix
   3. control / transformer_options are NOT forwarded to original_forward
+  4. _TRANSFORMER_PARAMS: new param names present, old names absent, mapping
 
 All tests run on CPU without instantiating the real transformer model.
 motif_core / diffusers / comfy imports are mocked where necessary.
@@ -420,3 +421,228 @@ class TestMakeComfyuiForwardEdgeCases:
         fwd(torch.zeros(1, 4), timestep=torch.zeros(1))
         fwd(torch.zeros(2, 4), timestep=torch.zeros(1))
         assert results == [torch.Size([1, 4]), torch.Size([2, 4])]
+
+
+# ===========================================================================
+# 5. _TRANSFORMER_PARAMS — parameter name rename validation via source parsing
+#
+# _TRANSFORMER_PARAMS is a local variable inside MotifVideoModel.__init__,
+# so we verify it by inspecting the source text of models/__init__.py directly.
+# ===========================================================================
+
+_INIT_SRC = open(_INIT_PY).read()
+
+
+class TestTransformerParamsNamesInSource:
+    """The source of models/__init__.py must contain the new
+    enable_text_cross_attention_* param strings inside _TRANSFORMER_PARAMS
+    and must NOT contain the old cross_attention_* bare names."""
+
+    def test_new_name_dual_present_in_source(self):
+        """Source must contain literal 'enable_text_cross_attention_dual'."""
+        assert "enable_text_cross_attention_dual" in _INIT_SRC, (
+            "Literal 'enable_text_cross_attention_dual' not found in models/__init__.py"
+        )
+
+    def test_new_name_single_present_in_source(self):
+        """Source must contain literal 'enable_text_cross_attention_single'."""
+        assert "enable_text_cross_attention_single" in _INIT_SRC, (
+            "Literal 'enable_text_cross_attention_single' not found in models/__init__.py"
+        )
+
+    def test_old_name_dual_absent_from_transformer_params_block(self):
+        """The _TRANSFORMER_PARAMS set literal must not contain the bare old name.
+        We extract the set literal from the source and check its tokens."""
+        import re
+        # Extract the set body between _TRANSFORMER_PARAMS = { ... }
+        m = re.search(
+            r"_TRANSFORMER_PARAMS\s*=\s*\{([^}]+)\}", _INIT_SRC, re.DOTALL
+        )
+        assert m is not None, "_TRANSFORMER_PARAMS assignment not found in source"
+        block = m.group(1)
+        # Tokenise quoted strings in the block
+        tokens = re.findall(r'"([^"]+)"', block)
+        assert "cross_attention_dual" not in tokens, (
+            f"Old name 'cross_attention_dual' still in _TRANSFORMER_PARAMS block: {tokens}"
+        )
+
+    def test_old_name_single_absent_from_transformer_params_block(self):
+        """The _TRANSFORMER_PARAMS set literal must not contain the bare old name."""
+        import re
+        m = re.search(
+            r"_TRANSFORMER_PARAMS\s*=\s*\{([^}]+)\}", _INIT_SRC, re.DOTALL
+        )
+        assert m is not None, "_TRANSFORMER_PARAMS assignment not found in source"
+        block = m.group(1)
+        tokens = re.findall(r'"([^"]+)"', block)
+        assert "cross_attention_single" not in tokens, (
+            f"Old name 'cross_attention_single' still in _TRANSFORMER_PARAMS block: {tokens}"
+        )
+
+    def test_new_dual_inside_transformer_params_block(self):
+        """'enable_text_cross_attention_dual' must appear inside the
+        _TRANSFORMER_PARAMS set literal, not just elsewhere in the file."""
+        import re
+        m = re.search(
+            r"_TRANSFORMER_PARAMS\s*=\s*\{([^}]+)\}", _INIT_SRC, re.DOTALL
+        )
+        assert m is not None, "_TRANSFORMER_PARAMS assignment not found in source"
+        block = m.group(1)
+        tokens = re.findall(r'"([^"]+)"', block)
+        assert "enable_text_cross_attention_dual" in tokens, (
+            f"'enable_text_cross_attention_dual' not found inside _TRANSFORMER_PARAMS block. "
+            f"Found: {tokens}"
+        )
+
+    def test_new_single_inside_transformer_params_block(self):
+        """'enable_text_cross_attention_single' must appear inside the
+        _TRANSFORMER_PARAMS set literal."""
+        import re
+        m = re.search(
+            r"_TRANSFORMER_PARAMS\s*=\s*\{([^}]+)\}", _INIT_SRC, re.DOTALL
+        )
+        assert m is not None, "_TRANSFORMER_PARAMS assignment not found in source"
+        block = m.group(1)
+        tokens = re.findall(r'"([^"]+)"', block)
+        assert "enable_text_cross_attention_single" in tokens, (
+            f"'enable_text_cross_attention_single' not found inside _TRANSFORMER_PARAMS block. "
+            f"Found: {tokens}"
+        )
+
+    def test_transformer_params_block_is_non_empty(self):
+        """The _TRANSFORMER_PARAMS set must have at least one quoted string."""
+        import re
+        m = re.search(
+            r"_TRANSFORMER_PARAMS\s*=\s*\{([^}]+)\}", _INIT_SRC, re.DOTALL
+        )
+        assert m is not None, "_TRANSFORMER_PARAMS assignment not found in source"
+        block = m.group(1)
+        tokens = re.findall(r'"([^"]+)"', block)
+        assert len(tokens) > 0, "_TRANSFORMER_PARAMS block appears to be empty"
+
+
+# ===========================================================================
+# 6. unet_config → transformer_kwargs mapping logic (inline simulation)
+#
+# Since _TRANSFORMER_PARAMS is a local variable, we extract the param set
+# from the source and simulate the filtering logic directly.
+# ===========================================================================
+
+def _extract_transformer_params_from_source():
+    """Parse _TRANSFORMER_PARAMS token list from models/__init__.py source."""
+    import re
+    m = re.search(
+        r"_TRANSFORMER_PARAMS\s*=\s*\{([^}]+)\}", _INIT_SRC, re.DOTALL
+    )
+    assert m is not None, "_TRANSFORMER_PARAMS assignment not found in source"
+    return set(re.findall(r'"([^"]+)"', m.group(1)))
+
+
+_PARSED_PARAMS = _extract_transformer_params_from_source()
+
+
+class TestTransformerParamsPropagation:
+    """Simulate the unet_config filtering logic using the parsed param set
+    and verify correct extraction for the renamed keys."""
+
+    def _build_unet_config(self, **overrides):
+        base = {
+            "in_channels": 16,
+            "num_attention_heads": 8,
+            "attention_head_dim": 64,
+            "num_layers": 2,
+            "enable_text_cross_attention_dual": False,
+            "enable_text_cross_attention_single": False,
+        }
+        base.update(overrides)
+        return base
+
+    def _collect_transformer_kwargs(self, unet_config):
+        """Replicate: {k: v for k, v in unet_config.items() if k in _TRANSFORMER_PARAMS}"""
+        return {k: v for k, v in unet_config.items() if k in _PARSED_PARAMS}
+
+    # --- happy path: True values ---
+
+    def test_enable_text_cross_attention_single_true_extracted(self):
+        cfg = self._build_unet_config(enable_text_cross_attention_single=True)
+        kwargs = self._collect_transformer_kwargs(cfg)
+        assert kwargs.get("enable_text_cross_attention_single") is True
+
+    def test_enable_text_cross_attention_dual_true_extracted(self):
+        cfg = self._build_unet_config(enable_text_cross_attention_dual=True)
+        kwargs = self._collect_transformer_kwargs(cfg)
+        assert kwargs.get("enable_text_cross_attention_dual") is True
+
+    # --- happy path: False values (existing checkpoint — no cross-attn) ---
+
+    def test_enable_text_cross_attention_single_false_extracted(self):
+        """False value must not be silently dropped by the filter."""
+        cfg = self._build_unet_config(enable_text_cross_attention_single=False)
+        kwargs = self._collect_transformer_kwargs(cfg)
+        assert "enable_text_cross_attention_single" in kwargs, (
+            "enable_text_cross_attention_single=False was not extracted"
+        )
+        assert kwargs["enable_text_cross_attention_single"] is False
+
+    def test_enable_text_cross_attention_dual_false_extracted(self):
+        cfg = self._build_unet_config(enable_text_cross_attention_dual=False)
+        kwargs = self._collect_transformer_kwargs(cfg)
+        assert "enable_text_cross_attention_dual" in kwargs
+        assert kwargs["enable_text_cross_attention_dual"] is False
+
+    # --- old names are NOT extracted ---
+
+    def test_old_cross_attention_dual_not_extracted(self):
+        """Old key must not pass through after rename."""
+        cfg = self._build_unet_config()
+        cfg["cross_attention_dual"] = True
+        kwargs = self._collect_transformer_kwargs(cfg)
+        assert "cross_attention_dual" not in kwargs, (
+            "Old key 'cross_attention_dual' must not pass through _TRANSFORMER_PARAMS"
+        )
+
+    def test_old_cross_attention_single_not_extracted(self):
+        cfg = self._build_unet_config()
+        cfg["cross_attention_single"] = True
+        kwargs = self._collect_transformer_kwargs(cfg)
+        assert "cross_attention_single" not in kwargs
+
+    # --- boundary: missing key entirely ---
+
+    def test_missing_enable_key_not_in_kwargs_no_keyerror(self):
+        """unet_config without the new keys must not raise KeyError."""
+        cfg = {
+            "in_channels": 16,
+            "num_attention_heads": 8,
+            "attention_head_dim": 64,
+            "num_layers": 2,
+        }
+        kwargs = self._collect_transformer_kwargs(cfg)
+        assert "enable_text_cross_attention_single" not in kwargs
+        assert "enable_text_cross_attention_dual" not in kwargs
+
+    # --- boundary: both True simultaneously ---
+
+    def test_both_enable_flags_true_simultaneously(self):
+        cfg = self._build_unet_config(
+            enable_text_cross_attention_dual=True,
+            enable_text_cross_attention_single=True,
+        )
+        kwargs = self._collect_transformer_kwargs(cfg)
+        assert kwargs["enable_text_cross_attention_dual"] is True
+        assert kwargs["enable_text_cross_attention_single"] is True
+
+    # --- type boundary ---
+
+    def test_integer_one_passed_through_as_is(self):
+        """int 1 must not be coerced to bool True."""
+        cfg = self._build_unet_config(enable_text_cross_attention_single=1)
+        kwargs = self._collect_transformer_kwargs(cfg)
+        assert kwargs["enable_text_cross_attention_single"] == 1
+
+    def test_none_value_passed_through(self):
+        """None must not be dropped."""
+        cfg = self._build_unet_config(enable_text_cross_attention_single=None)
+        kwargs = self._collect_transformer_kwargs(cfg)
+        assert "enable_text_cross_attention_single" in kwargs
+        assert kwargs["enable_text_cross_attention_single"] is None

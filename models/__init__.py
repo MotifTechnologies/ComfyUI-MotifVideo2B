@@ -100,13 +100,13 @@ class MotifVideoModel(comfy.model_base.BaseModel):
             "patch_size", "patch_size_t", "qk_norm", "norm_type",
             "text_embed_dim", "image_embed_dim", "pooled_projection_dim",
             "rope_theta", "rope_axes_dim", "base_latent_size",
-            "cross_attention_dual", "cross_attention_single",
+            "enable_text_cross_attention_dual", "enable_text_cross_attention_single",
         }
         transformer_kwargs = {
             k: v for k, v in original_unet_config.items()
             if k in _TRANSFORMER_PARAMS
         }
-        print(f"[MotifVideo] transformer_kwargs: { {k: v for k, v in transformer_kwargs.items() if k in ('rope_theta', 'num_decoder_layers', 'num_layers', 'num_single_layers', 'num_attention_heads', 'cross_attention_dual', 'cross_attention_single')} }")
+        print(f"[MotifVideo] transformer_kwargs: { {k: v for k, v in transformer_kwargs.items() if k in ('rope_theta', 'num_decoder_layers', 'num_layers', 'num_single_layers', 'num_attention_heads', 'enable_text_cross_attention_dual', 'enable_text_cross_attention_single')} }")
         transformer = MotifVideoTransformer3DModel(**transformer_kwargs)
         # Cast to bfloat16 to match checkpoint weights — avoids dtype mismatch
         # when ComfyUI force-loads bfloat16 weights but biases stay float32.

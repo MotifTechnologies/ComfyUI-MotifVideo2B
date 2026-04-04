@@ -1,9 +1,3 @@
-import sys
-
-# Make motif_core and motif_pipelines importable without pip install -e.
-sys.path.insert(0, "/lustrefs/team-multimodal/minsu/motif-models/packages/motif-core/src")
-sys.path.insert(0, "/lustrefs/team-multimodal/minsu/motif-models/packages/motif-pipelines/src")
-
 # Register MotifVideo19B model config with ComfyUI at startup.
 # config.py is a placeholder; replace with full implementation in checklist item 3.
 try:
@@ -123,7 +117,7 @@ try:
     }
 
 except Exception as e:
-    print(f"[ComfyUI-MotifVideo1.9B] ERROR: Failed to load nodes: {e}", file=sys.stderr)
+    print(f"[ComfyUI-MotifVideo1.9B] ERROR: Failed to load nodes: {e}")
     NODE_CLASS_MAPPINGS = {}
     NODE_DISPLAY_NAME_MAPPINGS = {}
 

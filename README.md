@@ -67,7 +67,7 @@ ln -s /path/to/checkpoint/vae/diffusion_pytorch_model.safetensors \
 
 | 노드 | 입력 | 출력 | 설명 |
 |------|------|------|------|
-| MotifVideo TeaCache | model, rel_l1_thresh, enable, start, end | MODEL | TeaCache 가속 적용 (샘플링 속도 향상) |
+| MotifVideo TeaCache | model, rel_l1_thresh, enable, start, end, calibrate | MODEL | TeaCache 가속 적용 (샘플링 속도 향상) |
 | Load MotifVideo Text Encoder | clip_name, dtype | CLIP | T5Gemma2 텍스트 인코더 로드 |
 | MotifVideo Text Encode | CLIP, text, negative_prompt | CONDITIONING x2 | 프롬프트 인코딩 |
 | Empty MotifVideo Latent | width, height, num_frames, batch_size | LATENT | 빈 비디오 latent |
@@ -80,6 +80,7 @@ ln -s /path/to/checkpoint/vae/diffusion_pytorch_model.safetensors \
 - `enable` (boolean): True = TeaCache 적용, False = 비활성화 (A/B 비교 용도)
 - `start` (float, 0.0–1.0): TeaCache가 활성화되는 샘플링 진행도 시작점. 0.0=샘플링 시작(고노이즈), 1.0=샘플링 끝(클린). 초기 스텝(코스 구조 결정 구간)은 캐싱하지 않는 것이 품질에 유리하므로 0.1–0.2 권장. 기본값: **0.0** (전체 구간 캐싱)
 - `end` (float, 0.0–1.0): TeaCache가 비활성화되는 샘플링 진행도 종료점. 후반 스텝(세부 디테일 결정 구간)은 캐싱하지 않는 것이 품질에 유리하므로 0.8–0.9 권장. 기본값: **1.0** (전체 구간 캐싱)
+- `calibrate` (boolean): True = 캘리브레이션 모드. 캐싱을 하지 않고 모든 스텝에서 full forward를 실행하며 (raw_diff, output_diff) 데이터를 수집합니다. 수집된 데이터로 polynomial coefficients를 재학습하여 정확도를 높일 수 있습니다. 기본값: **False**
 
 ## 체크포인트 교체
 

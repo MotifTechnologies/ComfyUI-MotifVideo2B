@@ -1358,3 +1358,421 @@ class TestIdempotencyDetailed:
         node, model2, transformer = self._patch_once()
         node.apply_teacache(model=model2, rel_l1_thresh=0.5, enable=True)
         assert transformer._teacache_enabled is True
+
+
+# ===========================================================================
+# 13. Calibration mode — INPUT_TYPES contract
+# ===========================================================================
+
+class TestCalibrationInputTypes:
+    """INPUT_TYPES must expose a calibrate BOOLEAN parameter."""
+
+    def test_input_types_contains_calibrate(self):
+        required = MotifTeaCache.INPUT_TYPES()["required"]
+        assert "calibrate" in required, "INPUT_TYPES must contain 'calibrate'"
+
+    def test_calibrate_type_is_boolean(self):
+        field = MotifTeaCache.INPUT_TYPES()["required"]["calibrate"]
+        assert field[0] == "BOOLEAN", "calibrate field must be BOOLEAN type"
+
+    def test_calibrate_default_is_false(self):
+        meta = MotifTeaCache.INPUT_TYPES()["required"]["calibrate"][1]
+        assert meta["default"] is False, "calibrate must default to False"
+
+    def test_calibrate_has_tooltip(self):
+        meta = MotifTeaCache.INPUT_TYPES()["required"]["calibrate"][1]
+        assert "tooltip" in meta, "calibrate must have a tooltip"
+
+    def test_calibrate_tooltip_is_string(self):
+        meta = MotifTeaCache.INPUT_TYPES()["required"]["calibrate"][1]
+        assert isinstance(meta["tooltip"], str)
+
+
+# ===========================================================================
+# 14. Calibration mode — _TeaCacheState constructor
+# ===========================================================================
+
+class TestTeaCacheStateCalibrationInit:
+    """_TeaCacheState must accept and store calibrate parameter."""
+
+    def test_calibrate_false_by_default(self):
+        state = _TeaCacheState(rel_l1_thresh=0.3, poly_coeffs=_MOTIF_POLY_COEFFS)
+        assert state.calibrate is False
+
+    def test_calibrate_true_stored(self):
+        state = _TeaCacheState(
+            rel_l1_thresh=0.3, poly_coeffs=_MOTIF_POLY_COEFFS, calibrate=True
+        )
+        assert state.calibrate is True
+
+    def test_calibration_data_initialized_as_empty_list(self):
+        state = _TeaCacheState(rel_l1_thresh=0.3, poly_coeffs=_MOTIF_POLY_COEFFS)
+        assert hasattr(state, "calibration_data"), (
+            "_TeaCacheState must have a calibration_data attribute"
+        )
+        assert state.calibration_data == [], (
+            "calibration_data must be initialized as an empty list"
+        )
+
+    def test_calibration_data_is_list_type(self):
+        state = _TeaCacheState(
+            rel_l1_thresh=0.3, poly_coeffs=_MOTIF_POLY_COEFFS, calibrate=True
+        )
+        assert isinstance(state.calibration_data, list)
+
+    def test_calibration_data_independent_across_instances(self):
+        """Each _TeaCacheState must own a distinct calibration_data list."""
+        a = _TeaCacheState(rel_l1_thresh=0.3, poly_coeffs=_MOTIF_POLY_COEFFS)
+        b = _TeaCacheState(rel_l1_thresh=0.3, poly_coeffs=_MOTIF_POLY_COEFFS)
+        a.calibration_data.append((1.0, 2.0))
+        assert b.calibration_data == [], (
+            "calibration_data lists must not be shared between instances"
+        )
+
+
+# ===========================================================================
+# 15. Calibration mode — teacache_forward behaviour
+# ===========================================================================
+
+def _make_calib_components():
+    """Return (forward, state, x, call_log) with calibrate=True state."""
+    B, C, T, H, W = 1, 4, 2, 4, 4
+    x = torch.ones(B, C, T, H, W)
+
+    call_log = []
+
+    def original_fwd(x_in, timestep, **kw):
+        call_log.append("called")
+        return x_in + 1.0
+
+    norm_out = torch.ones(1, 16, 8)  # non-zero to satisfy mean_prev guard
+    block0 = MagicMock(name="block0")
+    block0.norm1.return_value = (norm_out, MagicMock(), MagicMock(), MagicMock(), MagicMock())
+
+    transformer = MagicMock(name="transformer")
+    transformer.transformer_blocks = [block0]
+    transformer.time_text_embed.return_value = (torch.zeros(B, 64), MagicMock())
+    transformer.x_embedder.return_value = torch.zeros(B, 16, 8)
+
+    state = _TeaCacheState(
+        rel_l1_thresh=0.0,  # threshold=0 means normal mode would always compute
+        poly_coeffs=_MOTIF_POLY_COEFFS,
+        calibrate=True,
+    )
+    forward = _make_teacache_forward(original_fwd, transformer, state)
+    return forward, state, x, call_log
+
+
+class TestCalibrationForward:
+    """teacache_forward in calibration mode must always compute and collect diffs."""
+
+    def test_calibrate_mode_always_calls_original_forward_first_step(self):
+        """Step 0 (no cache): original_forward must be called once."""
+        forward, state, x, call_log = _make_calib_components()
+        forward(x, timestep=torch.tensor([0.5]))
+        assert len(call_log) == 1, (
+            "calibrate=True must call original_adapter_forward on first step"
+        )
+
+    def test_calibrate_mode_always_calls_original_forward_second_step(self):
+        """Step 1 (cache populated): original_forward must still be called."""
+        forward, state, x, call_log = _make_calib_components()
+        forward(x, timestep=torch.tensor([0.5]))
+        forward(x, timestep=torch.tensor([0.4]))
+        assert len(call_log) == 2, (
+            "calibrate=True must call original_adapter_forward on every step (no skipping)"
+        )
+
+    def test_calibrate_mode_does_not_skip_over_multiple_steps(self):
+        """Even with threshold=1e9 (would cache everything), calibrate bypasses caching."""
+        B, C, T, H, W = 1, 4, 2, 4, 4
+        x = torch.ones(B, C, T, H, W)
+        call_log = []
+
+        def original_fwd(x_in, timestep, **kw):
+            call_log.append("called")
+            return x_in + 1.0
+
+        norm_out = torch.ones(1, 16, 8)
+        block0 = MagicMock()
+        block0.norm1.return_value = (norm_out, MagicMock(), MagicMock(), MagicMock(), MagicMock())
+        transformer = MagicMock()
+        transformer.transformer_blocks = [block0]
+        transformer.time_text_embed.return_value = (torch.zeros(1, 64), MagicMock())
+        transformer.x_embedder.return_value = torch.zeros(1, 16, 8)
+
+        # threshold=1e9: normal mode would skip all after first step
+        state = _TeaCacheState(
+            rel_l1_thresh=1e9,
+            poly_coeffs=_MOTIF_POLY_COEFFS,
+            calibrate=True,
+        )
+        forward = _make_teacache_forward(original_fwd, transformer, state)
+
+        for _ in range(5):
+            forward(x, timestep=torch.tensor([0.5]))
+
+        assert len(call_log) == 5, (
+            "calibrate=True must call original_adapter_forward on all 5 steps, not just 1"
+        )
+
+    def test_calibrate_mode_step_counter_increments(self):
+        """Step counter must be incremented in calibration mode."""
+        forward, state, x, call_log = _make_calib_components()
+        forward(x, timestep=torch.tensor([0.5]))
+        cs0 = state.cond_states[0]
+        assert cs0.step_counter == 1
+
+    def test_calibrate_mode_step_counter_increments_across_multiple_steps(self):
+        forward, state, x, call_log = _make_calib_components()
+        for _ in range(4):
+            forward(x, timestep=torch.tensor([0.5]))
+        cs0 = state.cond_states[0]
+        assert cs0.step_counter == 4
+
+    def test_calibrate_mode_stores_previous_output_after_first_step(self):
+        """After step 0, cs.previous_output must be set."""
+        forward, state, x, call_log = _make_calib_components()
+        forward(x, timestep=torch.tensor([0.5]))
+        cs0 = state.cond_states[0]
+        assert cs0.previous_output is not None
+
+    def test_calibrate_mode_stores_previous_modulated_input_after_first_step(self):
+        """After step 0, cs.previous_modulated_input must be set."""
+        forward, state, x, call_log = _make_calib_components()
+        forward(x, timestep=torch.tensor([0.5]))
+        cs0 = state.cond_states[0]
+        assert cs0.previous_modulated_input is not None
+
+    def test_calibrate_mode_no_calibration_data_after_first_step(self):
+        """Step 0 has no previous data → calibration_data must stay empty."""
+        forward, state, x, call_log = _make_calib_components()
+        forward(x, timestep=torch.tensor([0.5]))
+        cs0 = state.cond_states[0]
+        assert cs0.calibration_data == [], (
+            "No calibration data point should be collected on the first step "
+            "(no previous data to compute diff against)"
+        )
+
+    def test_calibrate_mode_collects_one_data_point_after_second_step(self):
+        """Step 1 has previous data → exactly one tuple appended to calibration_data."""
+        forward, state, x, call_log = _make_calib_components()
+        forward(x, timestep=torch.tensor([0.5]))
+        forward(x, timestep=torch.tensor([0.4]))
+        cs0 = state.cond_states[0]
+        assert len(cs0.calibration_data) == 1, (
+            "Exactly one calibration data point must be collected after step 1"
+        )
+
+    def test_calibrate_mode_data_point_is_tuple_of_two_floats(self):
+        """Each calibration_data entry must be a (raw_diff, output_diff) tuple of floats."""
+        forward, state, x, call_log = _make_calib_components()
+        forward(x, timestep=torch.tensor([0.5]))
+        forward(x, timestep=torch.tensor([0.4]))
+        cs0 = state.cond_states[0]
+        entry = cs0.calibration_data[0]
+        assert isinstance(entry, tuple), "calibration_data entry must be a tuple"
+        assert len(entry) == 2, "calibration_data entry must have exactly 2 elements"
+        raw_diff, output_diff = entry
+        assert isinstance(raw_diff, float), "raw_diff must be a Python float"
+        assert isinstance(output_diff, float), "output_diff must be a Python float"
+
+    def test_calibrate_mode_raw_diff_is_non_negative(self):
+        """raw_diff is an absolute relative difference → must be >= 0."""
+        forward, state, x, call_log = _make_calib_components()
+        forward(x, timestep=torch.tensor([0.5]))
+        forward(x, timestep=torch.tensor([0.4]))
+        cs0 = state.cond_states[0]
+        raw_diff, _ = cs0.calibration_data[0]
+        assert raw_diff >= 0.0, "raw_diff must be non-negative"
+
+    def test_calibrate_mode_output_diff_is_non_negative(self):
+        """output_diff is an absolute relative difference → must be >= 0."""
+        forward, state, x, call_log = _make_calib_components()
+        forward(x, timestep=torch.tensor([0.5]))
+        forward(x, timestep=torch.tensor([0.4]))
+        cs0 = state.cond_states[0]
+        _, output_diff = cs0.calibration_data[0]
+        assert output_diff >= 0.0, "output_diff must be non-negative"
+
+    def test_calibrate_mode_collects_n_minus_1_data_points_for_n_steps(self):
+        """After N steps, calibration_data must contain N-1 entries."""
+        N = 6
+        forward, state, x, call_log = _make_calib_components()
+        for _ in range(N):
+            forward(x, timestep=torch.tensor([0.5]))
+        cs0 = state.cond_states[0]
+        assert len(cs0.calibration_data) == N - 1, (
+            f"Expected {N - 1} calibration data points after {N} steps, "
+            f"got {len(cs0.calibration_data)}"
+        )
+
+    def test_calibrate_mode_identical_steps_produce_zero_raw_diff(self):
+        """When input is identical across steps, raw_diff must be 0."""
+        B, C, T, H, W = 1, 4, 2, 4, 4
+        x = torch.ones(B, C, T, H, W)
+
+        def original_fwd(x_in, timestep, **kw):
+            return x_in + 1.0
+
+        # norm_out must be the same every call (identical modulated input)
+        norm_out = torch.ones(1, 16, 8)
+        block0 = MagicMock()
+        block0.norm1.return_value = (norm_out, MagicMock(), MagicMock(), MagicMock(), MagicMock())
+        transformer = MagicMock()
+        transformer.transformer_blocks = [block0]
+        transformer.time_text_embed.return_value = (torch.zeros(1, 64), MagicMock())
+        transformer.x_embedder.return_value = torch.zeros(1, 16, 8)
+
+        state = _TeaCacheState(
+            rel_l1_thresh=0.0,
+            poly_coeffs=_MOTIF_POLY_COEFFS,
+            calibrate=True,
+        )
+        forward = _make_teacache_forward(original_fwd, transformer, state)
+
+        forward(x, timestep=torch.tensor([0.5]))
+        forward(x, timestep=torch.tensor([0.5]))  # identical
+        cs0 = state.cond_states[0]
+        raw_diff, _ = cs0.calibration_data[0]
+        assert raw_diff == pytest.approx(0.0), (
+            "Identical consecutive steps must produce raw_diff=0"
+        )
+
+    def test_calibrate_mode_output_is_original_forward_result(self):
+        """Calibration mode must return original_adapter_forward result unmodified."""
+        B, C, T, H, W = 1, 4, 2, 4, 4
+        x = torch.ones(B, C, T, H, W)
+
+        def original_fwd(x_in, timestep, **kw):
+            return torch.full_like(x_in, 99.0)
+
+        norm_out = torch.ones(1, 16, 8)
+        block0 = MagicMock()
+        block0.norm1.return_value = (norm_out, MagicMock(), MagicMock(), MagicMock(), MagicMock())
+        transformer = MagicMock()
+        transformer.transformer_blocks = [block0]
+        transformer.time_text_embed.return_value = (torch.zeros(1, 64), MagicMock())
+        transformer.x_embedder.return_value = torch.zeros(1, 16, 8)
+
+        state = _TeaCacheState(
+            rel_l1_thresh=0.0,
+            poly_coeffs=_MOTIF_POLY_COEFFS,
+            calibrate=True,
+        )
+        forward = _make_teacache_forward(original_fwd, transformer, state)
+        result = forward(x, timestep=torch.tensor([0.5]))
+        expected = torch.full_like(x, 99.0)
+        assert torch.allclose(result, expected), (
+            "calibrate=True must return original_adapter_forward output unchanged"
+        )
+
+    def test_calibrate_mode_does_not_accumulate_rel_l1_distance(self):
+        """Calibration mode does not invoke should_skip, so accumulated_rel_l1_distance
+        must remain 0.0 throughout (it is never incremented in the calibrate branch)."""
+        forward, state, x, call_log = _make_calib_components()
+        for _ in range(4):
+            forward(x, timestep=torch.tensor([0.5]))
+        cs0 = state.cond_states[0]
+        assert cs0.accumulated_rel_l1_distance == pytest.approx(0.0), (
+            "accumulated_rel_l1_distance must stay 0.0 in calibration mode "
+            "(should_skip is never called)"
+        )
+
+    def test_calibrate_mode_previous_output_updated_every_step(self):
+        """previous_output must be overwritten with the latest forward result each step."""
+        B, C, T, H, W = 1, 4, 2, 4, 4
+        x = torch.ones(B, C, T, H, W)
+        step = [0]
+
+        def original_fwd(x_in, timestep, **kw):
+            step[0] += 1
+            return torch.full_like(x_in, float(step[0]))
+
+        norm_out = torch.ones(1, 16, 8)
+        block0 = MagicMock()
+        block0.norm1.return_value = (norm_out, MagicMock(), MagicMock(), MagicMock(), MagicMock())
+        transformer = MagicMock()
+        transformer.transformer_blocks = [block0]
+        transformer.time_text_embed.return_value = (torch.zeros(1, 64), MagicMock())
+        transformer.x_embedder.return_value = torch.zeros(1, 16, 8)
+
+        state = _TeaCacheState(
+            rel_l1_thresh=0.0,
+            poly_coeffs=_MOTIF_POLY_COEFFS,
+            calibrate=True,
+        )
+        forward = _make_teacache_forward(original_fwd, transformer, state)
+
+        forward(x, timestep=torch.tensor([0.5]))  # step 1, output=1.0
+        forward(x, timestep=torch.tensor([0.5]))  # step 2, output=2.0
+        forward(x, timestep=torch.tensor([0.5]))  # step 3, output=3.0
+
+        cs0 = state.cond_states[0]
+        # After 3 steps, previous_output must reflect step-3 result (all 3.0)
+        assert torch.allclose(cs0.previous_output, torch.full_like(x, 3.0)), (
+            "previous_output must be updated after every calibration step"
+        )
+
+
+# ===========================================================================
+# 16. Calibration mode — apply_teacache propagation
+# ===========================================================================
+
+class TestCalibrationApplyTeacache:
+    """apply_teacache must propagate calibrate=True into _TeaCacheState."""
+
+    def test_apply_teacache_calibrate_true_stored_in_state(self):
+        node = MotifTeaCache()
+        model, patched_model, inner_model, transformer, _ = _make_full_mock_model()
+        node.apply_teacache(
+            model=model, rel_l1_thresh=0.3, enable=True, calibrate=True
+        )
+        assert transformer._teacache_state.calibrate is True, (
+            "apply_teacache(calibrate=True) must set _TeaCacheState.calibrate=True"
+        )
+
+    def test_apply_teacache_calibrate_false_is_default(self):
+        """calibrate defaults to False — state must reflect that."""
+        node = MotifTeaCache()
+        model, patched_model, inner_model, transformer, _ = _make_full_mock_model()
+        node.apply_teacache(model=model, rel_l1_thresh=0.3, enable=True)
+        assert transformer._teacache_state.calibrate is False
+
+    def test_apply_teacache_calibrate_false_explicit(self):
+        node = MotifTeaCache()
+        model, patched_model, inner_model, transformer, _ = _make_full_mock_model()
+        node.apply_teacache(
+            model=model, rel_l1_thresh=0.3, enable=True, calibrate=False
+        )
+        assert transformer._teacache_state.calibrate is False
+
+    def test_apply_teacache_calibrate_enable_false_returns_original(self):
+        """When enable=False, calibrate parameter is irrelevant — original model returned."""
+        node = MotifTeaCache()
+        model = MagicMock(name="model")
+        result = node.apply_teacache(
+            model=model, rel_l1_thresh=0.3, enable=False, calibrate=True
+        )
+        assert result[0] is model
+
+    def test_apply_teacache_calibrate_true_state_has_calibration_data_list(self):
+        """After apply_teacache(calibrate=True), _teacache_state.calibration_data must be []."""
+        node = MotifTeaCache()
+        model, patched_model, inner_model, transformer, _ = _make_full_mock_model()
+        node.apply_teacache(
+            model=model, rel_l1_thresh=0.3, enable=True, calibrate=True
+        )
+        state = transformer._teacache_state
+        assert hasattr(state, "calibration_data")
+        assert state.calibration_data == []
+
+    def test_apply_teacache_calibrate_true_diffusion_model_is_transformer(self):
+        """Architecture: diffusion_model IS the transformer — no adapter wrapper."""
+        node = MotifTeaCache()
+        model, patched_model, inner_model, transformer, _ = _make_full_mock_model()
+        node.apply_teacache(
+            model=model, rel_l1_thresh=0.3, enable=True, calibrate=True
+        )
+        # inner_model.diffusion_model must be the same object as transformer
+        assert inner_model.diffusion_model is transformer

@@ -10,6 +10,7 @@ ComfyUI custom nodes for MotifVideo 1.9B video generation model.
 - **Empty MotifVideo Latent** — 비디오 latent 생성 (1280x736, 121 frames 등)
 - **Load MotifVideo VAE** — diffusers 포맷 3D 비디오 VAE 로드 (키 자동 변환)
 - **MotifVideo TeaCache** — TeaCache 가속으로 샘플링 속도 향상 (캐시 기반 블록 스킵)
+- **MotifVideo Image Encode** — Image-to-Video: 입력 이미지를 VAE 인코딩 후 conditioning에 주입
 - ComfyUI 내장 메모리 관리, offload, FP8 변환 자동 적용
 
 ## 설치
@@ -72,6 +73,23 @@ ln -s /path/to/checkpoint/vae/diffusion_pytorch_model.safetensors \
 | MotifVideo Text Encode | CLIP, text, negative_prompt | CONDITIONING x2 | 프롬프트 인코딩 |
 | Empty MotifVideo Latent | width, height, num_frames, batch_size | LATENT | 빈 비디오 latent |
 | Load MotifVideo VAE | vae_name | VAE | diffusers 포맷 3D VAE 로드 (키 자동 변환) |
+| MotifVideo Image Encode | positive, negative, VAE, IMAGE | CONDITIONING x2 | I2V: 이미지를 VAE 인코딩 후 conditioning에 주입 |
+
+### Image-to-Video (I2V)
+
+`MotifVideo Image Encode` 노드를 `MotifVideo Text Encode`와 `KSampler` 사이에 연결하면 I2V 모드로 동작합니다.
+
+```
+[LoadImage]                     → 입력 이미지
+         ↓ IMAGE
+[MotifVideo Image Encode]       ← VAE + positive + negative
+         ↓ positive, negative (concat_latent_image 주입됨)
+[KSampler]                      ← MODEL + modified conditioning + LATENT
+```
+
+- I2V 권장 파라미터: `ModelSamplingSD3` shift=2.5, KSampler cfg=8.0
+- T2V 전환: `MotifVideo Image Encode` 노드를 제거하고 `MotifVideo Text Encode` 출력을 직접 KSampler에 연결
+- 예제 워크플로우: `workflows/i2v_example.json`
 
 ### TeaCache 파라미터
 

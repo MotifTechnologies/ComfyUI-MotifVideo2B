@@ -1,6 +1,6 @@
 """tests/test_detect_unet_config.py — Unit tests for _detect_unet_config_with_motif().
 
-Requirements under test (checklist item 1):
+Requirements under test (checklist item 1 / cross-attn):
   - state_dict에 `single_transformer_blocks.0.cross_attn_query_proj.weight` 키가 있으면
     `enable_text_cross_attention_single: True`
   - state_dict에 `transformer_blocks.0.cross_attn_query_proj.weight` 키가 있으면
@@ -9,6 +9,18 @@ Requirements under test (checklist item 1):
   - `numel() > 0` 검증으로 빈 텐서 방어
   - 파라미터명이 `enable_text_cross_attention_dual/single`로 변경됨
     (이전: `cross_attention_dual/single`)
+
+Requirements under test (checklist 3.1 — patch_size 동적 추론):
+  - x_embedder.proj.weight는 Conv3d weight: shape [embed_dim, in_ch, pt, ph, pw]
+  - patch_size_t = shape[2], patch_size = shape[3]
+  - out_channels = proj_out.weight.shape[0] // (patch_size_t * patch_size * patch_size)
+  - patch_size_t도 반환 dict에 포함
+
+Requirements under test (checklist 3.2 — 아키텍처 상수 하드코딩 검증):
+  - attention_head_dim = 128 (rope_axes_dim 합계에 의존, state_dict 불가)
+  - num_decoder_layers = 8 (state_dict에 구분 키 없음)
+  - rope_axes_dim = [16, 56, 56] (sum == 128 == attention_head_dim)
+  - rope_theta = 10000.0
 
 All tests are CPU-only.
 
@@ -141,26 +153,37 @@ def _make_tensor(numel_positive: bool = True) -> torch.Tensor:
     return torch.zeros(1) if numel_positive else torch.zeros(0)
 
 
-def _minimal_motif_sd(extra: dict = None) -> dict:
+def _minimal_motif_sd(extra: dict = None, patch_size: int = 2, patch_size_t: int = 1) -> dict:
     """
     Minimum state_dict that satisfies the MotifVideo identity check
     (context_embedder + image_embedder both present) so the MotifVideo branch
-    is entered.  Shapes are kept minimal but numerically valid for the
-    architecture-detection arithmetic in the function.
+    is entered.  Shapes reflect Conv3d x_embedder as required by checklist 3.1.
+
+    x_embedder.proj.weight shape: [embed_dim, in_ch, patch_size_t, patch_size, patch_size]
+      - in_channels = shape[1] = 16
+      - patch_size_t = shape[2]  (default 1)
+      - patch_size   = shape[3]  (default 2)
+
+    proj_out.weight shape: [patch_size_t * patch_size^2 * out_channels, inner_dim]
+      - out_channels = shape[0] // (patch_size_t * patch_size * patch_size)
+      - With patch_size=2, patch_size_t=1, out_channels=16:
+          proj_out rows = 1 * 2*2 * 16 = 64
 
     inner_dim = 128  → num_attention_heads = 128 // 128 = 1
-    x_embedder shape = [128, 16]    → in_channels = 16
-    proj_out shape   = [64, 128]    → out_channels = 64 // (2*2) = 16
     num_layers = 0   (no transformer_blocks.0.norm1.linear.weight)
     num_single_layers = 1 (single_transformer_blocks.0.attn.to_k.weight exists)
     """
     inner_dim = 128
+    in_channels = 16
+    out_channels = 16
+    proj_out_rows = patch_size_t * patch_size * patch_size * out_channels
     sd = {
         "context_embedder.linear_1.weight": torch.zeros(64, 16),
         "image_embedder.linear_1.weight": torch.zeros(64, 32),
         "single_transformer_blocks.0.attn.to_k.weight": torch.zeros(inner_dim, inner_dim),
-        "x_embedder.proj.weight": torch.zeros(inner_dim, 16),
-        "proj_out.weight": torch.zeros(64, inner_dim),
+        # Conv3d weight: [embed_dim, in_ch, patch_size_t, patch_size_h, patch_size_w]
+        "x_embedder.proj.weight": torch.zeros(inner_dim, in_channels, patch_size_t, patch_size, patch_size),
+        "proj_out.weight": torch.zeros(proj_out_rows, inner_dim),
     }
     if extra:
         sd.update(extra)
@@ -406,3 +429,202 @@ class TestBoundaryCases:
         for r in results:
             assert r.get("enable_text_cross_attention_single") is True
             assert r.get("enable_text_cross_attention_dual") is False
+
+
+# ===========================================================================
+# 6. patch_size 동적 추론 (checklist 3.1)
+# ===========================================================================
+
+class TestPatchSizeInference:
+    """x_embedder.proj.weight shape에서 patch_size / patch_size_t를 동적으로 읽는지 검증.
+
+    Conv3d weight 규약: [embed_dim, in_ch, patch_size_t, patch_size_h, patch_size_w]
+      - patch_size   = shape[3]  (공간축 H)
+      - patch_size_t = shape[2]  (시간축 T)
+
+    out_channels = proj_out.weight.shape[0] // (patch_size_t * patch_size * patch_size)
+    """
+
+    def test_patch_size_inferred_from_weight_shape3(self):
+        """patch_size = x_embedder.proj.weight.shape[3]."""
+        sd = _minimal_motif_sd(patch_size=2, patch_size_t=1)
+        cfg = _detect(sd)
+        assert cfg.get("patch_size") == 2, (
+            f"Expected patch_size=2, got {cfg.get('patch_size')}"
+        )
+
+    def test_patch_size_4_inferred_correctly(self):
+        """patch_size=4 변형도 shape[3]에서 정확히 읽혀야 한다."""
+        sd = _minimal_motif_sd(patch_size=4, patch_size_t=1)
+        cfg = _detect(sd)
+        assert cfg.get("patch_size") == 4, (
+            f"Expected patch_size=4, got {cfg.get('patch_size')}"
+        )
+
+    def test_patch_size_t_inferred_from_weight_shape2(self):
+        """patch_size_t = x_embedder.proj.weight.shape[2]."""
+        sd = _minimal_motif_sd(patch_size=2, patch_size_t=2)
+        cfg = _detect(sd)
+        assert cfg.get("patch_size_t") == 2, (
+            f"Expected patch_size_t=2, got {cfg.get('patch_size_t')}"
+        )
+
+    def test_patch_size_t_1_inferred_correctly(self):
+        """patch_size_t=1 (기본값) — shape[2]==1이면 1로 추론."""
+        sd = _minimal_motif_sd(patch_size=2, patch_size_t=1)
+        cfg = _detect(sd)
+        assert cfg.get("patch_size_t") == 1, (
+            f"Expected patch_size_t=1, got {cfg.get('patch_size_t')}"
+        )
+
+    def test_out_channels_formula_patch_size2_patch_size_t1(self):
+        """out_channels = proj_out.shape[0] // (patch_size_t * patch_size^2).
+
+        patch_size=2, patch_size_t=1, out_channels=16 →
+          proj_out rows = 1 * 4 * 16 = 64  →  out_channels = 64 // 4 = 16
+        """
+        sd = _minimal_motif_sd(patch_size=2, patch_size_t=1)
+        cfg = _detect(sd)
+        # proj_out.weight.shape[0] = 1 * 2 * 2 * 16 = 64
+        # out_channels = 64 // (1 * 4) = 16
+        assert cfg.get("out_channels") == 16, (
+            f"Expected out_channels=16, got {cfg.get('out_channels')}"
+        )
+
+    def test_out_channels_formula_patch_size4_patch_size_t1(self):
+        """patch_size=4, patch_size_t=1, out_channels=16 →
+          proj_out rows = 1 * 16 * 16 = 256  →  out_channels = 256 // 16 = 16
+        """
+        sd = _minimal_motif_sd(patch_size=4, patch_size_t=1)
+        cfg = _detect(sd)
+        # proj_out.weight.shape[0] = 1 * 4 * 4 * 16 = 256
+        # out_channels = 256 // (1 * 16) = 16
+        assert cfg.get("out_channels") == 16, (
+            f"Expected out_channels=16 (patch_size=4), got {cfg.get('out_channels')}"
+        )
+
+    def test_out_channels_formula_patch_size2_patch_size_t2(self):
+        """patch_size=2, patch_size_t=2, out_channels=16 →
+          proj_out rows = 2 * 4 * 16 = 128  →  out_channels = 128 // 8 = 16
+        """
+        sd = _minimal_motif_sd(patch_size=2, patch_size_t=2)
+        cfg = _detect(sd)
+        # proj_out.weight.shape[0] = 2 * 2 * 2 * 16 = 128
+        # out_channels = 128 // (2 * 4) = 16
+        assert cfg.get("out_channels") == 16, (
+            f"Expected out_channels=16 (patch_size_t=2), got {cfg.get('out_channels')}"
+        )
+
+    def test_patch_size_in_channels_consistency(self):
+        """in_channels는 x_embedder.proj.weight.shape[1]에서 추론.
+        기본 in_channels=16이므로 shape[1]==16이어야 한다."""
+        sd = _minimal_motif_sd(patch_size=2, patch_size_t=1)
+        # in_channels는 in_channels 키로 반환됨
+        cfg = _detect(sd)
+        assert cfg.get("in_channels") == 16, (
+            f"Expected in_channels=16, got {cfg.get('in_channels')}"
+        )
+
+    def test_patch_size_present_as_key_in_output(self):
+        """patch_size 키가 반환 dict에 존재해야 한다."""
+        sd = _minimal_motif_sd(patch_size=2, patch_size_t=1)
+        cfg = _detect(sd)
+        assert "patch_size" in cfg, "patch_size key must be present in returned config"
+
+    def test_patch_size_t_present_as_key_in_output(self):
+        """patch_size_t 키가 반환 dict에 존재해야 한다 (체크리스트 3.1 명시)."""
+        sd = _minimal_motif_sd(patch_size=2, patch_size_t=1)
+        cfg = _detect(sd)
+        assert "patch_size_t" in cfg, "patch_size_t key must be present in returned config"
+
+
+# ===========================================================================
+# 7. 아키텍처 상수 검증 (checklist 3.2)
+# ===========================================================================
+
+class TestArchitectureConstants:
+    """state_dict에서 추론 불가능한 아키텍처 상수들이 정해진 값으로 반환되는지 검증.
+
+    - attention_head_dim = 128  (rope_axes_dim 합계: 16+56+56=128)
+    - num_decoder_layers = 8
+    - rope_axes_dim = [16, 56, 56]
+    - rope_theta = 10000.0
+    """
+
+    def test_attention_head_dim_equals_128(self):
+        """attention_head_dim은 항상 128이어야 한다."""
+        cfg = _detect(_minimal_motif_sd())
+        assert cfg.get("attention_head_dim") == 128, (
+            f"Expected attention_head_dim=128, got {cfg.get('attention_head_dim')}"
+        )
+
+    def test_num_decoder_layers_equals_8(self):
+        """num_decoder_layers는 항상 8이어야 한다."""
+        cfg = _detect(_minimal_motif_sd())
+        assert cfg.get("num_decoder_layers") == 8, (
+            f"Expected num_decoder_layers=8, got {cfg.get('num_decoder_layers')}"
+        )
+
+    def test_rope_axes_dim_equals_16_56_56(self):
+        """rope_axes_dim은 [16, 56, 56]이어야 한다."""
+        cfg = _detect(_minimal_motif_sd())
+        assert cfg.get("rope_axes_dim") == [16, 56, 56], (
+            f"Expected rope_axes_dim=[16, 56, 56], got {cfg.get('rope_axes_dim')}"
+        )
+
+    def test_rope_axes_dim_sum_equals_attention_head_dim(self):
+        """rope_axes_dim의 합계 == attention_head_dim (16+56+56=128)."""
+        cfg = _detect(_minimal_motif_sd())
+        rope_axes_dim = cfg.get("rope_axes_dim")
+        attention_head_dim = cfg.get("attention_head_dim")
+        assert rope_axes_dim is not None, "rope_axes_dim must be present"
+        assert attention_head_dim is not None, "attention_head_dim must be present"
+        assert sum(rope_axes_dim) == attention_head_dim, (
+            f"sum(rope_axes_dim)={sum(rope_axes_dim)} != attention_head_dim={attention_head_dim}"
+        )
+
+    def test_rope_theta_equals_10000(self):
+        """rope_theta는 10000.0이어야 한다."""
+        cfg = _detect(_minimal_motif_sd())
+        rope_theta = cfg.get("rope_theta")
+        assert rope_theta == 10000.0, (
+            f"Expected rope_theta=10000.0, got {rope_theta}"
+        )
+
+    def test_rope_theta_is_float(self):
+        """rope_theta는 float 타입이어야 한다."""
+        cfg = _detect(_minimal_motif_sd())
+        rope_theta = cfg.get("rope_theta")
+        assert isinstance(rope_theta, float), (
+            f"Expected float, got {type(rope_theta).__name__}"
+        )
+
+    def test_rope_axes_dim_is_list_of_ints(self):
+        """rope_axes_dim은 int 원소를 가진 list여야 한다."""
+        cfg = _detect(_minimal_motif_sd())
+        rope_axes_dim = cfg.get("rope_axes_dim")
+        assert isinstance(rope_axes_dim, list), (
+            f"Expected list, got {type(rope_axes_dim).__name__}"
+        )
+        assert all(isinstance(v, int) for v in rope_axes_dim), (
+            f"All elements must be int: {rope_axes_dim}"
+        )
+
+    def test_architecture_constants_unchanged_with_cross_attn_key(self):
+        """cross-attn 키 존재 여부와 관계없이 아키텍처 상수는 고정값."""
+        SINGLE_KEY = "single_transformer_blocks.0.cross_attn_query_proj.weight"
+        sd = _minimal_motif_sd({SINGLE_KEY: _make_tensor()})
+        cfg = _detect(sd)
+        assert cfg.get("attention_head_dim") == 128
+        assert cfg.get("num_decoder_layers") == 8
+        assert cfg.get("rope_axes_dim") == [16, 56, 56]
+        assert cfg.get("rope_theta") == 10000.0
+
+    def test_architecture_constants_unchanged_with_patch_size_4(self):
+        """patch_size 변경과 관계없이 아키텍처 상수는 고정값."""
+        sd = _minimal_motif_sd(patch_size=4, patch_size_t=1)
+        cfg = _detect(sd)
+        assert cfg.get("attention_head_dim") == 128
+        assert cfg.get("num_decoder_layers") == 8
+        assert cfg.get("rope_axes_dim") == [16, 56, 56]
+        assert cfg.get("rope_theta") == 10000.0

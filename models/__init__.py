@@ -7,9 +7,8 @@ MotifVideoModel subclasses comfy.model_base.BaseModel and overrides:
   - extra_conds()  — passes text encoder outputs and attention mask to the
                      diffusion model via the ComfyUI cond dict.
 
-The actual MotifVideoTransformer3DModel is imported from motif_core (no code
-copy). sys.path is extended in the package __init__.py before this module is
-imported, so the import below always succeeds at runtime.
+The actual MotifVideoTransformer3DModel is embedded in models/transformer/
+(copied from motif_core with import paths localised).
 
 The transformer is set directly as self.diffusion_model (NOT wrapped in an
 adapter nn.Module) so that state_dict keys match the checkpoint without a
@@ -21,9 +20,7 @@ import torch
 import comfy.model_base
 import comfy.conds
 
-from motif_core.models.transformers.transformer_motif_video import (
-    MotifVideoTransformer3DModel,
-)
+from .transformer import MotifVideoTransformer3DModel
 
 from .adapter import MotifVideoModelAdapter
 from .latent_format import MotifVideoLatent

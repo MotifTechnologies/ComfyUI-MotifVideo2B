@@ -19,9 +19,9 @@ ComfyUI custom nodes for MotifVideo 1.9B video generation model.
 ```bash
 cd /path/to/ComfyUI
 pip install -r custom_nodes/ComfyUI-MotifVideo1.9B/requirements.txt
-pip install -e /path/to/motif-models/packages/motif-core
-pip install -e /path/to/motif-models/packages/motif-pipelines
 ```
+
+motif_core, motif-pipelines 별도 설치 불필요. MotifVideoTransformer3DModel이 `models/transformer/`에 내장되어 있어 독립 배포가 가능합니다.
 
 ### 모델 심링크
 
@@ -110,11 +110,24 @@ ln -s /path/to/original_checkpoint/transformer/diffusion_pytorch_model.safetenso
 
 ## 아키텍처
 
-- Transformer: MotifVideoTransformer3DModel (motif_core — 직접 import, 코드 복사 X)
+- Transformer: MotifVideoTransformer3DModel (`models/transformer/transformer_motif_video.py` 내장)
   - cross-attn variant 자동 감지: state_dict 키(`single_transformer_blocks.0.cross_attn_query_proj.weight`, `transformer_blocks.0.cross_attn_query_proj.weight`) 기반으로 `enable_text_cross_attention_single/dual` 자동 설정
+  - patch_size, patch_size_t: state_dict에서 동적 감지 (하드코딩 제거)
 - Text Encoder: T5Gemma2Model (transformers 5.0.0+)
 - VAE: AutoencoderKLWan (diffusers 키 자동 변환 → ComfyUI WAN VAE)
 - Scheduler: FlowMatchEulerDiscreteScheduler (KSampler 연동)
+
+### Upstream 동기화
+
+motif_core 원본이 변경되면 수동으로 내장 파일을 업데이트해야 합니다.
+
+| 내장 파일 | 원본 위치 | 비고 |
+|-----------|-----------|------|
+| `models/transformer/transformer_motif_video.py` | `motif-core/src/motif_core/models/transformers/` | import 경로 변환 필요 |
+| `models/transformer/tread_mixin.py` | `motif-core/src/motif_core/models/mixin/` | loguru→logging 교체 필요 |
+| `models/transformer/accelerate_patch.py` | — | no-op stub (동기화 불필요) |
+
+복사 후 `from motif_core.` → 로컬 상대 import, `from loguru import logger` → `import logging` 교체 필요.
 
 ## Jira
 

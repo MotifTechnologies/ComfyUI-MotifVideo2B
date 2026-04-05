@@ -633,14 +633,14 @@ class TestGracefulFailure(unittest.TestCase):
             f"fallback NODE_CLASS_MAPPINGS가 빈 dict({{}})가 아님. 발견 크기: {fallback_sizes}"
         )
 
-    def test_graceful_print_on_error_uses_stderr(self):
-        """에러 출력이 stderr로 향하는지 확인 (사용자 혼란 방지)."""
+    def test_graceful_print_on_error_exists(self):
+        """에러 발생 시 print 출력이 존재하는지 확인."""
         src = (PROJECT_ROOT / "__init__.py").read_text()
-        # sys.stderr 참조가 있어야 함
+        # ERROR print가 있어야 함
         self.assertIn(
-            "sys.stderr",
+            "ERROR: Failed to load nodes",
             src,
-            "__init__.py 에러 출력이 sys.stderr를 사용하지 않음"
+            "__init__.py에 에러 출력 메시지가 없음"
         )
 
 

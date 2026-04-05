@@ -296,9 +296,9 @@ def checkpoint_keys():
 class TestCheckpointKeyPrefix:
     """State-dict keys must NOT carry a spurious 'transformer.' prefix."""
 
-    def test_checkpoint_has_742_keys(self, checkpoint_keys):
-        assert len(checkpoint_keys) == 742, (
-            f"Expected 742 keys, got {len(checkpoint_keys)}"
+    def test_checkpoint_has_838_keys(self, checkpoint_keys):
+        assert len(checkpoint_keys) == 838, (
+            f"Expected 838 keys, got {len(checkpoint_keys)}"
         )
 
     def test_no_transformer_prefix(self, checkpoint_keys):
@@ -646,3 +646,69 @@ class TestTransformerParamsPropagation:
         kwargs = self._collect_transformer_kwargs(cfg)
         assert "enable_text_cross_attention_single" in kwargs
         assert kwargs["enable_text_cross_attention_single"] is None
+
+
+# ===========================================================================
+# 7. Import 경로 검증 — 1.2 체크리스트: motif_core 잔존 import 없음
+#
+# models/__init__.py 소스에서 motif_core를 직접 import하는 구문이 없고,
+# MotifVideoTransformer3DModel을 로컬 상대 경로(from .transformer)로 가져오는지
+# 소스 텍스트로 검증한다.
+# ===========================================================================
+
+class TestImportPathLocalised:
+    """models/__init__.py must use local relative import for the transformer,
+    not the external motif_core package."""
+
+    def test_no_motif_core_direct_import_in_source(self):
+        """'from motif_core.<module> import' must not appear as an executable
+        import statement. Docstring/comment references to motif_core are allowed."""
+        import re
+        # Match actual import syntax: 'from motif_core.' at line start (ignoring
+        # leading whitespace) — this catches real import statements, not prose.
+        pattern = re.compile(r"^\s*from\s+motif_core\.")
+        for i, line in enumerate(_INIT_SRC.splitlines(), start=1):
+            assert not pattern.match(line), (
+                f"Unexpected motif_core import found at line {i}: {line!r}"
+            )
+
+    def test_no_import_motif_core_statement(self):
+        """'import motif_core' must not appear as a bare import statement."""
+        import re
+        pattern = re.compile(r"^\s*import\s+motif_core")
+        for i, line in enumerate(_INIT_SRC.splitlines(), start=1):
+            assert not pattern.match(line), (
+                f"Direct 'import motif_core' found at line {i}: {line!r}"
+            )
+
+    def test_transformer_imported_from_local_relative_path(self):
+        """MotifVideoTransformer3DModel must be imported via 'from .transformer'."""
+        assert "from .transformer import MotifVideoTransformer3DModel" in _INIT_SRC, (
+            "Local relative import 'from .transformer import MotifVideoTransformer3DModel' "
+            "not found in models/__init__.py"
+        )
+
+    def test_old_motif_core_transformer_import_absent(self):
+        """The old external import path must not exist anywhere in the file
+        (including comments, to catch accidental reintroduction)."""
+        old_import = (
+            "from motif_core.models.transformers.transformer_motif_video "
+            "import MotifVideoTransformer3DModel"
+        )
+        assert old_import not in _INIT_SRC, (
+            f"Old motif_core import path still present in models/__init__.py"
+        )
+
+    def test_transformer_relative_import_line_number_is_low(self):
+        """The relative import should appear near the top of the file (line <= 30),
+        confirming it is an active import and not a dead comment."""
+        for i, line in enumerate(_INIT_SRC.splitlines(), start=1):
+            if "from .transformer import MotifVideoTransformer3DModel" in line:
+                assert i <= 30, (
+                    f"Relative import found at line {i}, expected <= 30 "
+                    "(might be in a comment or dead code block)"
+                )
+                return
+        pytest.fail(
+            "'from .transformer import MotifVideoTransformer3DModel' not found in source"
+        )

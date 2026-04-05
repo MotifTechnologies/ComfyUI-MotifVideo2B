@@ -604,10 +604,10 @@ class TestGracefulFailure(unittest.TestCase):
                     ):
                         mapping_sizes.append(len(node.value.keys))
 
-        # 정상 경로 딕셔너리(4개)와 fallback {}(0개) 모두 있을 수 있음
+        # 정상 경로 딕셔너리(6개)와 fallback {}(0개) 모두 있을 수 있음
         self.assertIn(
-            4, mapping_sizes,
-            f"NODE_CLASS_MAPPINGS 정상 경로에 4개 항목이 없음. 발견된 크기: {mapping_sizes}"
+            6, mapping_sizes,
+            f"NODE_CLASS_MAPPINGS 정상 경로에 6개 항목이 없음. 발견된 크기: {mapping_sizes}"
         )
 
     def test_graceful_fallback_mapping_is_empty_dict(self):

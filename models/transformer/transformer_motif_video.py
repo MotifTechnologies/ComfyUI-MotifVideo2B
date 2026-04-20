@@ -46,6 +46,7 @@ except ImportError:
     TransformerBlockMetadata = None
 
 from .tread_mixin import is_tread_end, is_tread_start
+from .ops_primitives import _get_default_ops
 
 # Apply FSDP2 patches for activation checkpointing.
 # Please checkout models.transformers.accelerate_patch for more details.
@@ -246,11 +247,15 @@ class MotifVideoPatchEmbed(nn.Module):
         patch_size: Union[int, Tuple[int, int, int]] = 16,
         in_chans: int = 3,
         embed_dim: int = 768,
+        dtype=None,
+        device=None,
+        operations=None,
     ) -> None:
         super().__init__()
+        ops = operations or _get_default_ops()
 
         patch_size = (patch_size, patch_size, patch_size) if isinstance(patch_size, int) else patch_size
-        self.proj = nn.Conv3d(in_chans, embed_dim, kernel_size=patch_size, stride=patch_size)
+        self.proj = ops.Conv3d(in_chans, embed_dim, kernel_size=patch_size, stride=patch_size, dtype=dtype, device=device)
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         hidden_states = self.proj(hidden_states)
@@ -259,11 +264,19 @@ class MotifVideoPatchEmbed(nn.Module):
 
 
 class MotifVideoAdaNorm(nn.Module):
-    def __init__(self, in_features: int, out_features: Optional[int] = None) -> None:
+    def __init__(
+        self,
+        in_features: int,
+        out_features: Optional[int] = None,
+        dtype=None,
+        device=None,
+        operations=None,
+    ) -> None:
         super().__init__()
+        ops = operations or _get_default_ops()
 
         out_features = out_features or 2 * in_features
-        self.linear = nn.Linear(in_features, out_features)
+        self.linear = ops.Linear(in_features, out_features, dtype=dtype, device=device)
         self.nonlinearity = nn.SiLU()
 
     def forward(self, temb: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:

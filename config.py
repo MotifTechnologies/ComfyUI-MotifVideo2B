@@ -45,13 +45,14 @@ class MotifVideo19B(supported_models_base.BASE):
     vae_key_prefix = ["vae."]
     text_encoder_key_prefix = ["text_encoders."]
 
-    # FP8 quantisation is intentionally disabled. MotifVideoTransformer3DModel
-    # uses vanilla torch.nn.Conv3d / nn.Linear, so ComfyUI's fp8-aware
-    # manual_cast ops never wrap this model and fp8-stored weights end up
-    # mismatched with fp32 biases at Conv3d forward
-    # (RuntimeError: Input type (BFloat16) and bias type (float) should be the same).
-    # Proper fp8 support would require rewriting the transformer layers on top
-    # of comfy.ops.manual_cast / fp8_ops — tracked as a follow-up issue.
+    # FP8 quantisation is temporarily disabled pending Phase 2 (#18).
+    # Phase 1 (#17) completed: MotifVideoTransformer3DModel now uses comfy.ops
+    # (manual_cast / fp8_ops) for all directly-created layers via operations
+    # injection. The remaining unwrapped path is the diffusers `Attention`
+    # inside each block — its internal to_q / to_k / to_v / to_out / QKNorm
+    # are still plain torch.nn.* and would crash under fp8 weight loading.
+    # Phase 2 (#18) will replace that with a comfy.ops-based Q/K/V module and
+    # then flip this to True.
     optimizations = {"fp8": False}
 
     def model_type(self, state_dict, prefix=""):

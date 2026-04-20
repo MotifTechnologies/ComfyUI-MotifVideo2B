@@ -161,10 +161,15 @@ def apply_sage_attention(transformer):
     VRAM offload 와 호환된다.
     """
     from .sage_ops import _SAGE_AVAILABLE
+    if os.environ.get("MOTIFVIDEO_DISABLE_SAGE") == "1":
+        logger.warning("[MotifVideo] MOTIFVIDEO_DISABLE_SAGE=1 — skipping apply_sage_attention")
+        return transformer
     if not _SAGE_AVAILABLE:
         logger.info("[MotifVideo] sageattention unavailable — skipping apply_sage_attention")
         return transformer
 
+    import sageattention
+    _sage_ver = getattr(sageattention, "__version__", "unknown")
     from .attention_processor import xDiTMotifVideoAttnProcessor
 
     num_dual = len(transformer.transformer_blocks)
@@ -173,8 +178,10 @@ def apply_sage_attention(transformer):
         block.attn.processor = xDiTMotifVideoAttnProcessor()
 
     logger.info(
-        "[MotifVideo] Patched %d dual + %d single attention layers with xDiTMotifVideoAttnProcessor",
-        num_dual, num_single,
+        "[MotifVideo] Patched %d dual + %d single attention layers with "
+        "xDiTMotifVideoAttnProcessor (sageattention %s). "
+        "Disable via MOTIFVIDEO_DISABLE_SAGE=1",
+        num_dual, num_single, _sage_ver,
     )
     return transformer
 

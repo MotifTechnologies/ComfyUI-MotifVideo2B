@@ -25,13 +25,10 @@ from diffusers.loaders import FromOriginalModelMixin, PeftAdapterMixin
 from diffusers.models.attention_processor import Attention, AttentionProcessor
 from diffusers.models.cache_utils import CacheMixin
 from diffusers.models.embeddings import (
-    PixArtAlphaTextProjection,
-    TimestepEmbedding,
     Timesteps,
 )
 from diffusers.models.modeling_outputs import Transformer2DModelOutput
 from diffusers.models.modeling_utils import ModelMixin
-from diffusers.models.normalization import AdaLayerNormContinuous
 from diffusers.utils import USE_PEFT_BACKEND, logging, scale_lora_layers, unscale_lora_layers
 
 try:
@@ -42,6 +39,7 @@ except ImportError:
 
 from .tread_mixin import is_tread_end, is_tread_start
 from .ops_primitives import (
+    AdaLayerNormContinuous,
     AdaLayerNormZero,
     AdaLayerNormZeroSingle,
     FeedForward,
@@ -969,20 +967,33 @@ class MotifVideoTransformer3DModel(ModelMixin, ConfigMixin, PeftAdapterMixin, Fr
     ) -> None:
         super().__init__()
 
+        ops = operations or _get_default_ops()
         inner_dim = num_attention_heads * attention_head_dim
         out_channels = out_channels or in_channels
 
         # 1. Latent and condition embedders
-        self.x_embedder = MotifVideoPatchEmbed((patch_size_t, patch_size, patch_size), in_channels, inner_dim)
-        self.context_embedder = PixArtAlphaTextProjection(in_features=text_embed_dim, hidden_size=inner_dim)
+        self.x_embedder = MotifVideoPatchEmbed(
+            (patch_size_t, patch_size, patch_size), in_channels, inner_dim,
+            dtype=dtype, device=device, operations=ops,
+        )
+        self.context_embedder = LocalPixArtAlphaTextProjection(
+            in_features=text_embed_dim, hidden_size=inner_dim,
+            dtype=dtype, device=device, operations=ops,
+        )
 
         # First frame conditioning: Image conditioning embedders
         self.image_embed_dim = image_embed_dim
         if image_embed_dim is not None:
             # Project image embeddings from vision encoder to transformer dim
-            self.image_embedder = MotifVideoImageProjection(in_features=image_embed_dim, hidden_size=inner_dim)
+            self.image_embedder = MotifVideoImageProjection(
+                in_features=image_embed_dim, hidden_size=inner_dim,
+                dtype=dtype, device=device, operations=ops,
+            )
 
-        self.time_text_embed = MotifVideoConditionEmbedding(inner_dim, pooled_projection_dim)
+        self.time_text_embed = MotifVideoConditionEmbedding(
+            inner_dim, pooled_projection_dim,
+            dtype=dtype, device=device, operations=ops,
+        )
 
         # 2. RoPE
         self.rope = MotifVideoRotaryPosEmbed(
@@ -1029,9 +1040,13 @@ class MotifVideoTransformer3DModel(ModelMixin, ConfigMixin, PeftAdapterMixin, Fr
 
         # 5. Output projection
         self.norm_out = AdaLayerNormContinuous(
-            inner_dim, inner_dim, elementwise_affine=False, eps=1e-6, norm_type=norm_type
+            inner_dim, inner_dim, elementwise_affine=False, eps=1e-6, norm_type=norm_type,
+            dtype=dtype, device=device, operations=ops,
         )
-        self.proj_out = nn.Linear(inner_dim, patch_size_t * patch_size * patch_size * out_channels)
+        self.proj_out = ops.Linear(
+            inner_dim, patch_size_t * patch_size * patch_size * out_channels,
+            dtype=dtype, device=device,
+        )
 
         # Verify cross-attention config matches actual block state.
         # Catches silent misconfiguration (e.g. checkpoint config with renamed keys).

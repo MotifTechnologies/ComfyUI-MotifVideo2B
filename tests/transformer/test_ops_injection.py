@@ -46,6 +46,7 @@ from models.transformer.transformer_motif_video import (
     MotifVideoSingleTransformerBlock,
     MotifVideoTransformerBlock,
     MotifVideoConditionEmbedding,
+    MotifVideoTransformer3DModel,
 )
 from models.transformer import transformer_motif_video as _tmv
 
@@ -577,3 +578,181 @@ def test_transformer3d_register_to_config_sanity():
     assert config_dict.get("attention_head_dim") == 64
     assert to_config.get("num_attention_heads") == 4
     assert saved.get("num_attention_heads") == 4
+
+
+# ---------------------------------------------------------------------------
+# P3.2b — MotifVideoTransformer3DModel top-level embedder/norm/projection ops
+# ---------------------------------------------------------------------------
+
+def _make_small_transformer3d(**kwargs):
+    """Helper: minimal-cost MotifVideoTransformer3DModel for injection tests."""
+    defaults = dict(
+        num_attention_heads=4,
+        attention_head_dim=64,
+        num_layers=1,
+        num_single_layers=1,
+        num_decoder_layers=0,
+        text_embed_dim=256,
+        image_embed_dim=None,
+        pooled_projection_dim=None,
+        rope_axes_dim=(16, 24, 24),
+    )
+    defaults.update(kwargs)
+    return MotifVideoTransformer3DModel(**defaults)
+
+
+def test_transformer3d_top_level_default_fallback_and_dtype():
+    """Top-level embedder/norm/proj must use _get_default_ops() with dtype/device propagated.
+
+    Covers: x_embedder, context_embedder, time_text_embed, norm_out, proj_out.
+    image_embed_dim=None so image_embedder is not created.
+    blocks (transformer_blocks / single_transformer_blocks) are P3.2c scope.
+    """
+    from models.transformer.ops_primitives import (
+        PixArtAlphaTextProjection as LocalPixArtProj,
+        AdaLayerNormContinuous as LocalAdaLNCont,
+    )
+    default_ops = comfy.ops.disable_weight_init
+
+    model = _make_small_transformer3d(
+        dtype=torch.float16,
+        device="cuda",
+    )
+
+    # x_embedder.proj → default_ops.Conv3d
+    assert type(model.x_embedder.proj) is default_ops.Conv3d, (
+        f"x_embedder.proj: expected {default_ops.Conv3d}, got {type(model.x_embedder.proj)}"
+    )
+    assert model.x_embedder.proj.weight.dtype == torch.float16
+    assert model.x_embedder.proj.weight.device.type == "cuda"
+
+    # context_embedder → local PixArtAlphaTextProjection instance
+    assert isinstance(model.context_embedder, LocalPixArtProj), (
+        f"context_embedder must be local PixArtAlphaTextProjection, got {type(model.context_embedder)}"
+    )
+    for attr in ("linear_1", "linear_2"):
+        layer = getattr(model.context_embedder, attr)
+        assert type(layer) is default_ops.Linear, f"context_embedder.{attr}: {type(layer)}"
+        assert layer.weight.dtype == torch.float16, f"context_embedder.{attr}.weight.dtype"
+        assert layer.weight.device.type == "cuda", f"context_embedder.{attr}.weight.device"
+
+    # image_embedder must NOT exist (image_embed_dim=None)
+    assert not hasattr(model, "image_embedder"), "image_embedder must not exist when image_embed_dim=None"
+
+    # time_text_embed.timestep_embedder linear layers → default_ops.Linear
+    for attr in ("linear_1", "linear_2"):
+        layer = getattr(model.time_text_embed.timestep_embedder, attr)
+        assert type(layer) is default_ops.Linear, (
+            f"time_text_embed.timestep_embedder.{attr}: expected {default_ops.Linear}, got {type(layer)}"
+        )
+        assert layer.weight.dtype == torch.float16
+        assert layer.weight.device.type == "cuda"
+
+    # norm_out → local AdaLayerNormContinuous instance
+    assert isinstance(model.norm_out, LocalAdaLNCont), (
+        f"norm_out must be local AdaLayerNormContinuous, got {type(model.norm_out)}"
+    )
+    assert type(model.norm_out.linear) is default_ops.Linear, (
+        f"norm_out.linear: expected {default_ops.Linear}, got {type(model.norm_out.linear)}"
+    )
+
+    # proj_out → default_ops.Linear with dtype/device propagated
+    assert type(model.proj_out) is default_ops.Linear, (
+        f"proj_out: expected {default_ops.Linear}, got {type(model.proj_out)}"
+    )
+    assert model.proj_out.weight.dtype == torch.float16, "proj_out.weight.dtype"
+    assert model.proj_out.weight.device.type == "cuda", "proj_out.weight.device"
+
+
+def test_transformer3d_top_level_ops_injection():
+    """Explicit _MockOps3D injection: top-level layers must use marker types.
+
+    Verifies x_embedder, context_embedder, time_text_embed, norm_out, proj_out.
+    blocks internal layers are P3.2c scope — not checked here.
+    """
+    from models.transformer.ops_primitives import (
+        PixArtAlphaTextProjection as LocalPixArtProj,
+        AdaLayerNormContinuous as LocalAdaLNCont,
+    )
+
+    class _MarkerConv3d3D(nn.Conv3d):
+        pass
+
+    class _MarkerLinear3D(nn.Linear):
+        pass
+
+    class _MarkerLayerNorm3D(nn.LayerNorm):
+        pass
+
+    class _MockOps3D:
+        Conv3d = _MarkerConv3d3D
+        Linear = _MarkerLinear3D
+        LayerNorm = _MarkerLayerNorm3D
+
+    model = _make_small_transformer3d(operations=_MockOps3D)
+
+    # x_embedder.proj → _MarkerConv3d3D
+    assert isinstance(model.x_embedder.proj, _MarkerConv3d3D), (
+        f"x_embedder.proj: expected _MarkerConv3d3D, got {type(model.x_embedder.proj)}"
+    )
+
+    # context_embedder → local PixArtAlphaTextProjection with _MarkerLinear3D inner layers
+    assert isinstance(model.context_embedder, LocalPixArtProj), (
+        f"context_embedder must be local PixArtAlphaTextProjection, got {type(model.context_embedder)}"
+    )
+    assert type(model.context_embedder.linear_1) is _MarkerLinear3D, (
+        f"context_embedder.linear_1: expected _MarkerLinear3D, got {type(model.context_embedder.linear_1)}"
+    )
+    assert type(model.context_embedder.linear_2) is _MarkerLinear3D, (
+        f"context_embedder.linear_2: expected _MarkerLinear3D, got {type(model.context_embedder.linear_2)}"
+    )
+
+    # time_text_embed.timestep_embedder → _MarkerLinear3D inner layers
+    assert type(model.time_text_embed.timestep_embedder.linear_1) is _MarkerLinear3D, (
+        f"timestep_embedder.linear_1: expected _MarkerLinear3D, got "
+        f"{type(model.time_text_embed.timestep_embedder.linear_1)}"
+    )
+    assert type(model.time_text_embed.timestep_embedder.linear_2) is _MarkerLinear3D, (
+        f"timestep_embedder.linear_2: expected _MarkerLinear3D, got "
+        f"{type(model.time_text_embed.timestep_embedder.linear_2)}"
+    )
+
+    # norm_out → local AdaLayerNormContinuous with _MarkerLinear3D
+    assert isinstance(model.norm_out, LocalAdaLNCont), (
+        f"norm_out must be local AdaLayerNormContinuous, got {type(model.norm_out)}"
+    )
+    assert type(model.norm_out.linear) is _MarkerLinear3D, (
+        f"norm_out.linear: expected _MarkerLinear3D, got {type(model.norm_out.linear)}"
+    )
+
+    # proj_out → _MarkerLinear3D
+    assert type(model.proj_out) is _MarkerLinear3D, (
+        f"proj_out: expected _MarkerLinear3D, got {type(model.proj_out)}"
+    )
+
+
+def test_transformer3d_image_embedder_branch():
+    """image_embed_dim=<int> branch must create image_embedder with ops propagated.
+
+    Covers the conditional at line 985-990 of MotifVideoTransformer3DModel.__init__
+    that the default-fallback test skips (it uses image_embed_dim=None).
+    """
+    default_ops = comfy.ops.disable_weight_init
+    model = _make_small_transformer3d(
+        image_embed_dim=512,
+        operations=None,
+        dtype=torch.float16,
+        device="cuda",
+    )
+    assert hasattr(model, "image_embedder"), "image_embedder must be created when image_embed_dim is not None"
+    # image_embedder is a MotifVideoImageProjection instance — check its inner layers got ops propagated
+    for attr in ("norm_in", "norm_out"):
+        layer = getattr(model.image_embedder, attr)
+        assert type(layer) is default_ops.LayerNorm, f"image_embedder.{attr}: expected LayerNorm, got {type(layer)}"
+        assert layer.weight.dtype == torch.float16
+        assert layer.weight.device.type == "cuda"
+    for attr in ("linear_1", "linear_2"):
+        layer = getattr(model.image_embedder, attr)
+        assert type(layer) is default_ops.Linear, f"image_embedder.{attr}: expected Linear, got {type(layer)}"
+        assert layer.weight.dtype == torch.float16
+        assert layer.weight.device.type == "cuda"

@@ -19,6 +19,7 @@ by monkey-patching the transformer's forward method.
 import torch
 import comfy.model_base
 import comfy.conds
+import comfy.ops
 
 from .transformer import MotifVideoTransformer3DModel
 
@@ -90,6 +91,21 @@ class MotifVideoModel(comfy.model_base.BaseModel):
         super().__init__(model_config, model_type, device=device)
         model_config.unet_config = original_unet_config  # restore
 
+        # Select operations class based on weight/compute dtype.
+        # Mirrors comfy.model_base.BaseModel.__init__ pattern (model_base.py:143-147).
+        # custom_operations override takes precedence; otherwise pick_operations chooses
+        # manual_cast / fp8_ops / disable_weight_init depending on model_config and dtype.
+        if model_config.custom_operations is None:
+            fp8 = model_config.optimizations.get("fp8", False)
+            operations = comfy.ops.pick_operations(
+                original_unet_config.get("dtype", None),
+                self.manual_cast_dtype,
+                fp8_optimizations=fp8,
+                model_config=model_config,
+            )
+        else:
+            operations = model_config.custom_operations
+
         # Filter unet_config to only valid MotifVideoTransformer3DModel params.
         _TRANSFORMER_PARAMS = {
             "in_channels", "out_channels", "num_attention_heads", "attention_head_dim",
@@ -104,10 +120,15 @@ class MotifVideoModel(comfy.model_base.BaseModel):
             if k in _TRANSFORMER_PARAMS
         }
         print(f"[MotifVideo] transformer_kwargs: { {k: v for k, v in transformer_kwargs.items() if k in ('rope_theta', 'num_decoder_layers', 'num_layers', 'num_single_layers', 'num_attention_heads', 'enable_text_cross_attention_dual', 'enable_text_cross_attention_single')} }")
-        transformer = MotifVideoTransformer3DModel(**transformer_kwargs)
-        # Cast to bfloat16 to match checkpoint weights — avoids dtype mismatch
-        # when ComfyUI force-loads bfloat16 weights but biases stay float32.
-        transformer = transformer.to(dtype=torch.bfloat16)
+        transformer = MotifVideoTransformer3DModel(
+            **transformer_kwargs,
+            operations=operations,
+            dtype=self.get_dtype(),
+            device=device,
+        )
+        # NOTE: .to(dtype=bfloat16) 강제 cast 제거 — comfy.ops 가 weight load 시점에
+        # weight_dtype 과 compute_dtype 매핑을 담당. 기존 강제 cast 는 manual_cast 회로를
+        # 우회하여 fp8/quantized weight 를 망가뜨릴 수 있음.
 
         # Monkey-patch forward to translate ComfyUI calling convention.
         # The transformer is set directly as diffusion_model (not wrapped in

@@ -1,7 +1,8 @@
 .plans/
 .manuals/
-.claude/settings.local.json
-.claude/.template-manifest
+.claude/
+.analyze/
+.codex/
 _old_claude_files/
 tmp/
 .env

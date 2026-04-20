@@ -45,6 +45,7 @@ from models.transformer.transformer_motif_video import (
     MotifVideoImageProjection,
     MotifVideoSingleTransformerBlock,
     MotifVideoTransformerBlock,
+    MotifVideoConditionEmbedding,
 )
 from models.transformer import transformer_motif_video as _tmv
 
@@ -416,3 +417,110 @@ def test_transformer_block_ops_injection():
         assert type(layer.net[2]) is _MarkerLinear3, (
             f"{attr}.net[2]: expected _MarkerLinear3, got {type(layer.net[2])}"
         )
+
+
+# ---------------------------------------------------------------------------
+# P3.1 — MotifVideoConditionEmbedding ops injection
+# ---------------------------------------------------------------------------
+
+def test_condition_embedding_default_fallback_and_dtype():
+    """operations=None must fall back to comfy.ops.disable_weight_init with dtype/device propagated.
+
+    Covers pooled_projection_dim=<int> branch (text_embedder created).
+    The pooled_projection_dim=None branch is covered by test_condition_embedding_no_pooled_projection.
+    time_proj must remain diffusers Timesteps (sinusoidal, no parameters).
+    """
+    from diffusers.models.embeddings import Timesteps as DiffusersTimesteps
+    from models.transformer.ops_primitives import (
+        TimestepEmbedding as LocalTimestepEmbedding,
+        PixArtAlphaTextProjection as LocalPixArtAlphaTextProjection,
+    )
+
+    default_ops = comfy.ops.disable_weight_init
+
+    cond = MotifVideoConditionEmbedding(
+        embedding_dim=3072,
+        pooled_projection_dim=1536,
+        dtype=torch.float16,
+        device="cuda",
+    )
+
+    # time_proj must remain diffusers Timesteps (no parameters, not replaced)
+    assert isinstance(cond.time_proj, DiffusersTimesteps), (
+        f"time_proj must be diffusers Timesteps, got {type(cond.time_proj)}"
+    )
+
+    # timestep_embedder must be local ops_primitives.TimestepEmbedding
+    assert isinstance(cond.timestep_embedder, LocalTimestepEmbedding), (
+        f"timestep_embedder must be local TimestepEmbedding, got {type(cond.timestep_embedder)}"
+    )
+    for attr in ("linear_1", "linear_2"):
+        layer = getattr(cond.timestep_embedder, attr)
+        assert type(layer) is default_ops.Linear, (
+            f"timestep_embedder.{attr}: expected {default_ops.Linear}, got {type(layer)}"
+        )
+        assert layer.weight.dtype == torch.float16, f"timestep_embedder.{attr}.weight.dtype"
+        assert layer.weight.device.type == "cuda", f"timestep_embedder.{attr}.weight.device"
+
+    # text_embedder must be local ops_primitives.PixArtAlphaTextProjection
+    assert isinstance(cond.text_embedder, LocalPixArtAlphaTextProjection), (
+        f"text_embedder must be local PixArtAlphaTextProjection, got {type(cond.text_embedder)}"
+    )
+    for attr in ("linear_1", "linear_2"):
+        layer = getattr(cond.text_embedder, attr)
+        assert type(layer) is default_ops.Linear, (
+            f"text_embedder.{attr}: expected {default_ops.Linear}, got {type(layer)}"
+        )
+        assert layer.weight.dtype == torch.float16, f"text_embedder.{attr}.weight.dtype"
+        assert layer.weight.device.type == "cuda", f"text_embedder.{attr}.weight.device"
+
+
+def test_condition_embedding_ops_injection():
+    """Explicit _MockOpsCond injection: timestep_embedder and text_embedder
+    must be local ops_primitives instances with _MarkerLinear inner layers."""
+    from models.transformer.ops_primitives import (
+        TimestepEmbedding as LocalTimestepEmbedding,
+        PixArtAlphaTextProjection as LocalPixArtAlphaTextProjection,
+    )
+
+    class _MarkerLinearCond(nn.Linear):
+        pass
+
+    class _MockOpsCond:
+        Linear = _MarkerLinearCond
+
+    cond = MotifVideoConditionEmbedding(
+        embedding_dim=512,
+        pooled_projection_dim=256,
+        operations=_MockOpsCond,
+    )
+
+    # timestep_embedder is local ops_primitives class instance
+    assert isinstance(cond.timestep_embedder, LocalTimestepEmbedding), (
+        f"timestep_embedder must be local TimestepEmbedding, got {type(cond.timestep_embedder)}"
+    )
+    assert type(cond.timestep_embedder.linear_1) is _MarkerLinearCond, (
+        f"timestep_embedder.linear_1: expected _MarkerLinearCond, got {type(cond.timestep_embedder.linear_1)}"
+    )
+    assert type(cond.timestep_embedder.linear_2) is _MarkerLinearCond, (
+        f"timestep_embedder.linear_2: expected _MarkerLinearCond, got {type(cond.timestep_embedder.linear_2)}"
+    )
+
+    # text_embedder is local ops_primitives class instance
+    assert isinstance(cond.text_embedder, LocalPixArtAlphaTextProjection), (
+        f"text_embedder must be local PixArtAlphaTextProjection, got {type(cond.text_embedder)}"
+    )
+    assert type(cond.text_embedder.linear_1) is _MarkerLinearCond, (
+        f"text_embedder.linear_1: expected _MarkerLinearCond, got {type(cond.text_embedder.linear_1)}"
+    )
+    assert type(cond.text_embedder.linear_2) is _MarkerLinearCond, (
+        f"text_embedder.linear_2: expected _MarkerLinearCond, got {type(cond.text_embedder.linear_2)}"
+    )
+
+
+def test_condition_embedding_no_pooled_projection():
+    """pooled_projection_dim=None must not create text_embedder (diffusers parity)."""
+    cond = MotifVideoConditionEmbedding(embedding_dim=512, pooled_projection_dim=None)
+    assert not hasattr(cond, "text_embedder"), (
+        "text_embedder must not be created when pooled_projection_dim=None"
+    )

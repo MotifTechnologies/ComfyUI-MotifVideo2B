@@ -41,7 +41,14 @@ except ImportError:
     TransformerBlockMetadata = None
 
 from .tread_mixin import is_tread_end, is_tread_start
-from .ops_primitives import AdaLayerNormZero, AdaLayerNormZeroSingle, FeedForward, _get_default_ops
+from .ops_primitives import (
+    AdaLayerNormZero,
+    AdaLayerNormZeroSingle,
+    FeedForward,
+    PixArtAlphaTextProjection as LocalPixArtAlphaTextProjection,
+    TimestepEmbedding as LocalTimestepEmbedding,
+    _get_default_ops,
+)
 
 # Apply FSDP2 patches for activation checkpointing.
 # Please checkout models.transformers.accelerate_patch for more details.
@@ -286,14 +293,24 @@ class MotifVideoConditionEmbedding(nn.Module):
         self,
         embedding_dim: int,
         pooled_projection_dim: int | None,
+        dtype=None,
+        device=None,
+        operations=None,
     ):
         super().__init__()
+        ops = operations or _get_default_ops()
 
         self.time_proj = Timesteps(num_channels=256, flip_sin_to_cos=True, downscale_freq_shift=0)
-        self.timestep_embedder = TimestepEmbedding(in_channels=256, time_embed_dim=embedding_dim)
+        self.timestep_embedder = LocalTimestepEmbedding(
+            in_channels=256, time_embed_dim=embedding_dim,
+            dtype=dtype, device=device, operations=ops,
+        )
 
         if isinstance(pooled_projection_dim, int):
-            self.text_embedder = PixArtAlphaTextProjection(pooled_projection_dim, embedding_dim, act_fn="silu")
+            self.text_embedder = LocalPixArtAlphaTextProjection(
+                pooled_projection_dim, embedding_dim, act_fn="silu",
+                dtype=dtype, device=device, operations=ops,
+            )
 
     def forward(
         self,

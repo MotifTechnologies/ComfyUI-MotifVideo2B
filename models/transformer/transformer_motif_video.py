@@ -1117,6 +1117,7 @@ class MotifVideoTransformer3DModel(ModelMixin, ConfigMixin, PeftAdapterMixin, Fr
         attention_kwargs: Optional[Dict[str, Any]] = None,
         return_dict: bool = True,
         tread_mixin: Optional[Any] = None,
+        tread_disabled: bool = False,
     ) -> Union[torch.Tensor, Dict[str, torch.Tensor]]:
         """
         Forward pass of the MotifVideoTransformer3DModel.
@@ -1131,10 +1132,24 @@ class MotifVideoTransformer3DModel(ModelMixin, ConfigMixin, PeftAdapterMixin, Fr
             attention_kwargs: Additional arguments for attention processors.
             return_dict: Whether to return a Transformer2DModelOutput.
             tread_mixin: Optional TreadMixin instance for token reduction.
+            tread_disabled: When True, force tread_mixin to None (dense pass).
+                torch.compile specializes on this bool, producing separate graphs
+                for dense vs routed without attribute toggling.
 
         Returns:
             Transformer2DModelOutput or tuple containing the predicted samples.
         """
+        # tread_disabled=True forces a dense pass; torch.compile specializes on
+        # this bool to produce separate graphs for dense vs routed without
+        # attribute toggling.
+        # Upstream motif-core additionally falls back to `self._inference_tread_mixin`
+        # when `tread_mixin is None`; that hidden-instance-state path only makes
+        # sense with motif-models' sparse-guidance pipeline, which ComfyUI does
+        # not drive. We deliberately omit the fallback here to keep forward()
+        # behavior a function of its explicit arguments only.
+        if tread_disabled:
+            tread_mixin = None
+
         if attention_kwargs is not None:
             attention_kwargs = attention_kwargs.copy()
             lora_scale = attention_kwargs.pop("scale", 1.0)

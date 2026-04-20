@@ -118,6 +118,48 @@ class MotifVideoModel(comfy.model_base.BaseModel):
         self.diffusion_model = transformer
         self.diffusion_model.eval()
 
+        # NOTE: channels_last_3d / torch.compile은 __init__ 시점이 아니라
+        # load_model_weights() 이후에 적용해야 한다. apply_compile 이 만드는
+        # OptimizedModule 은 state_dict key prefix 가 "_orig_mod." 로 바뀌어
+        # ComfyUI 가 전달하는 `transformer_blocks.X` 형태 키와 전부 mismatch
+        # 되어 load_state_dict 가 unet missing 으로 처리한다. 결과적으로
+        # 파라미터가 로드되지 않고 random-init transformer 로 샘플링 →
+        # 출력이 노이즈. 아래 load_model_weights 오버라이드에서 처리한다.
+
+    # ------------------------------------------------------------------
+    # load_model_weights: apply channels_last_3d + torch.compile
+    # AFTER checkpoint state_dict has been loaded
+    # ------------------------------------------------------------------
+
+    def load_model_weights(self, sd, unet_prefix="", assign=False):
+        # 1) 원본 BaseModel 로직으로 state_dict 로드
+        super().load_model_weights(sd, unet_prefix=unet_prefix, assign=assign)
+
+        # 2) weight 로드 완료 후 메모리 레이아웃 + compile 적용 (1회만)
+        try:
+            import torch._dynamo.eval_frame as _dynamo_eval
+            _OptimizedModule = _dynamo_eval.OptimizedModule
+        except Exception:
+            _OptimizedModule = tuple()  # isinstance check no-op
+
+        if isinstance(self.diffusion_model, _OptimizedModule):
+            # 이미 wrap 된 상태면 skip (재호출 방지 + revert 후 stale 경로 방어)
+            return self
+
+        # compile / channels_last_3d 호출은 직전 플랜(20260419-perf-sampling) 에서 revert.
+        # - apply_compile: OptimizedModule wrapping 이 ComfyUI ModelPatcher offload 와 구조
+        #   충돌 (VRAM 폭증). 04_log '2026-04-20 P3.1 최종 revert' 참조.
+        # - apply_channels_last_3d: sage/compile 과 coupled 도입 전제라 단독은 이득 불투명.
+        #   sage 활성화 후 별도 gate 로 재도입 검토 (현재 gate: MOTIFVIDEO_ENABLE_CHANNELS_LAST=1,
+        #   아직 도입 안 됨).
+        #
+        # 속도 회복 경로는 SageAttention 이식 (이슈 #16). attention processor 교체만 수행
+        # 하므로 OptimizedModule wrapping 없음 → ModelPatcher offload 와 호환.
+        # sageattention 미설치 환경에선 helper 가 자동 no-op.
+        from .compile_config import apply_sage_attention
+        self.diffusion_model = apply_sage_attention(self.diffusion_model)
+        return self
+
     # ------------------------------------------------------------------
     # concat_cond: build the 17-channel prepend condition
     # ------------------------------------------------------------------

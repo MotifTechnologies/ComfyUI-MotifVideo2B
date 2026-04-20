@@ -22,21 +22,13 @@ import torch.nn as nn
 import torch.nn.functional as F
 from diffusers.configuration_utils import ConfigMixin, register_to_config
 from diffusers.loaders import FromOriginalModelMixin, PeftAdapterMixin
-from diffusers.models.attention import FeedForward
 from diffusers.models.attention_processor import Attention, AttentionProcessor
 from diffusers.models.cache_utils import CacheMixin
 from diffusers.models.embeddings import (
-    PixArtAlphaTextProjection,
-    TimestepEmbedding,
     Timesteps,
 )
 from diffusers.models.modeling_outputs import Transformer2DModelOutput
 from diffusers.models.modeling_utils import ModelMixin
-from diffusers.models.normalization import (
-    AdaLayerNormContinuous,
-    AdaLayerNormZero,
-    AdaLayerNormZeroSingle,
-)
 from diffusers.utils import USE_PEFT_BACKEND, logging, scale_lora_layers, unscale_lora_layers
 
 try:
@@ -46,6 +38,15 @@ except ImportError:
     TransformerBlockMetadata = None
 
 from .tread_mixin import is_tread_end, is_tread_start
+from .ops_primitives import (
+    AdaLayerNormContinuous,
+    AdaLayerNormZero,
+    AdaLayerNormZeroSingle,
+    FeedForward,
+    PixArtAlphaTextProjection as LocalPixArtAlphaTextProjection,
+    TimestepEmbedding as LocalTimestepEmbedding,
+    _get_default_ops,
+)
 
 # Apply FSDP2 patches for activation checkpointing.
 # Please checkout models.transformers.accelerate_patch for more details.
@@ -246,11 +247,15 @@ class MotifVideoPatchEmbed(nn.Module):
         patch_size: Union[int, Tuple[int, int, int]] = 16,
         in_chans: int = 3,
         embed_dim: int = 768,
+        dtype=None,
+        device=None,
+        operations=None,
     ) -> None:
         super().__init__()
+        ops = operations or _get_default_ops()
 
         patch_size = (patch_size, patch_size, patch_size) if isinstance(patch_size, int) else patch_size
-        self.proj = nn.Conv3d(in_chans, embed_dim, kernel_size=patch_size, stride=patch_size)
+        self.proj = ops.Conv3d(in_chans, embed_dim, kernel_size=patch_size, stride=patch_size, dtype=dtype, device=device)
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         hidden_states = self.proj(hidden_states)
@@ -259,11 +264,19 @@ class MotifVideoPatchEmbed(nn.Module):
 
 
 class MotifVideoAdaNorm(nn.Module):
-    def __init__(self, in_features: int, out_features: Optional[int] = None) -> None:
+    def __init__(
+        self,
+        in_features: int,
+        out_features: Optional[int] = None,
+        dtype=None,
+        device=None,
+        operations=None,
+    ) -> None:
         super().__init__()
+        ops = operations or _get_default_ops()
 
         out_features = out_features or 2 * in_features
-        self.linear = nn.Linear(in_features, out_features)
+        self.linear = ops.Linear(in_features, out_features, dtype=dtype, device=device)
         self.nonlinearity = nn.SiLU()
 
     def forward(self, temb: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -278,14 +291,24 @@ class MotifVideoConditionEmbedding(nn.Module):
         self,
         embedding_dim: int,
         pooled_projection_dim: int | None,
+        dtype=None,
+        device=None,
+        operations=None,
     ):
         super().__init__()
+        ops = operations or _get_default_ops()
 
         self.time_proj = Timesteps(num_channels=256, flip_sin_to_cos=True, downscale_freq_shift=0)
-        self.timestep_embedder = TimestepEmbedding(in_channels=256, time_embed_dim=embedding_dim)
+        self.timestep_embedder = LocalTimestepEmbedding(
+            in_channels=256, time_embed_dim=embedding_dim,
+            dtype=dtype, device=device, operations=ops,
+        )
 
         if isinstance(pooled_projection_dim, int):
-            self.text_embedder = PixArtAlphaTextProjection(pooled_projection_dim, embedding_dim, act_fn="silu")
+            self.text_embedder = LocalPixArtAlphaTextProjection(
+                pooled_projection_dim, embedding_dim, act_fn="silu",
+                dtype=dtype, device=device, operations=ops,
+            )
 
     def forward(
         self,
@@ -602,13 +625,14 @@ class MotifVideoRotaryPosEmbed(nn.Module):
 
 
 class MotifVideoImageProjection(nn.Module):
-    def __init__(self, in_features: int, hidden_size: int):
+    def __init__(self, in_features: int, hidden_size: int, dtype=None, device=None, operations=None):
         super().__init__()
-        self.norm_in = nn.LayerNorm(in_features)
-        self.linear_1 = nn.Linear(in_features, in_features)
+        ops = operations or _get_default_ops()
+        self.norm_in = ops.LayerNorm(in_features, dtype=dtype, device=device)
+        self.linear_1 = ops.Linear(in_features, in_features, dtype=dtype, device=device)
         self.act_fn = nn.GELU()
-        self.linear_2 = nn.Linear(in_features, hidden_size)
-        self.norm_out = nn.LayerNorm(hidden_size)
+        self.linear_2 = ops.Linear(in_features, hidden_size, dtype=dtype, device=device)
+        self.norm_out = ops.LayerNorm(hidden_size, dtype=dtype, device=device)
 
     def forward(self, image_embeds: torch.Tensor) -> torch.Tensor:
         hidden_states = self.norm_in(image_embeds)
@@ -628,9 +652,13 @@ class MotifVideoSingleTransformerBlock(nn.Module):
         qk_norm: str = "rms_norm",
         norm_type: str = "layer_norm",
         enable_text_cross_attention: bool = False,
+        dtype=None,
+        device=None,
+        operations=None,
     ) -> None:
         super().__init__()
 
+        ops = operations or _get_default_ops()
         hidden_size = num_attention_heads * attention_head_dim
         mlp_dim = int(hidden_size * mlp_ratio)
 
@@ -646,19 +674,21 @@ class MotifVideoSingleTransformerBlock(nn.Module):
             eps=1e-6,
             pre_only=True,
         )
+        if dtype is not None or device is not None:
+            self.attn = self.attn.to(dtype=dtype, device=device)
 
         self.enable_text_cross_attention = enable_text_cross_attention
         if enable_text_cross_attention:
-            self.cross_attn_query_proj = nn.Linear(hidden_size, hidden_size)
-            self.cross_attn_query_norm = nn.LayerNorm(hidden_size, eps=1e-6)
-            self.cross_attn_out_proj = nn.Linear(hidden_size, hidden_size)
+            self.cross_attn_query_proj = ops.Linear(hidden_size, hidden_size, dtype=dtype, device=device)
+            self.cross_attn_query_norm = ops.LayerNorm(hidden_size, eps=1e-6, dtype=dtype, device=device)
+            self.cross_attn_out_proj = ops.Linear(hidden_size, hidden_size, dtype=dtype, device=device)
             nn.init.zeros_(self.cross_attn_out_proj.weight)
             nn.init.zeros_(self.cross_attn_out_proj.bias)
 
-        self.norm = AdaLayerNormZeroSingle(hidden_size, norm_type=norm_type)
-        self.proj_mlp = nn.Linear(hidden_size, mlp_dim)
+        self.norm = AdaLayerNormZeroSingle(hidden_size, norm_type=norm_type, dtype=dtype, device=device, operations=ops)
+        self.proj_mlp = ops.Linear(hidden_size, mlp_dim, dtype=dtype, device=device)
         self.act_mlp = nn.GELU(approximate="tanh")
-        self.proj_out = nn.Linear(hidden_size + mlp_dim, hidden_size)
+        self.proj_out = ops.Linear(hidden_size + mlp_dim, hidden_size, dtype=dtype, device=device)
 
     def forward(
         self,
@@ -735,13 +765,17 @@ class MotifVideoTransformerBlock(nn.Module):
         qk_norm: str = "rms_norm",
         norm_type: str = "layer_norm",
         enable_text_cross_attention: bool = False,
+        dtype=None,
+        device=None,
+        operations=None,
     ) -> None:
         super().__init__()
 
+        ops = operations or _get_default_ops()
         hidden_size = num_attention_heads * attention_head_dim
 
-        self.norm1 = AdaLayerNormZero(hidden_size, norm_type=norm_type)
-        self.norm1_context = AdaLayerNormZero(hidden_size, norm_type=norm_type)
+        self.norm1 = AdaLayerNormZero(hidden_size, norm_type=norm_type, dtype=dtype, device=device, operations=ops)
+        self.norm1_context = AdaLayerNormZero(hidden_size, norm_type=norm_type, dtype=dtype, device=device, operations=ops)
 
         self.attn = Attention(
             query_dim=hidden_size,
@@ -756,20 +790,22 @@ class MotifVideoTransformerBlock(nn.Module):
             qk_norm=qk_norm,
             eps=1e-6,
         )
+        if dtype is not None or device is not None:
+            self.attn = self.attn.to(dtype=dtype, device=device)
 
         self.enable_text_cross_attention = enable_text_cross_attention
         if enable_text_cross_attention:
-            self.cross_attn_query_proj = nn.Linear(hidden_size, hidden_size)
-            self.cross_attn_query_norm = nn.LayerNorm(hidden_size, eps=1e-6)
-            self.cross_attn_out_proj = nn.Linear(hidden_size, hidden_size)
+            self.cross_attn_query_proj = ops.Linear(hidden_size, hidden_size, dtype=dtype, device=device)
+            self.cross_attn_query_norm = ops.LayerNorm(hidden_size, eps=1e-6, dtype=dtype, device=device)
+            self.cross_attn_out_proj = ops.Linear(hidden_size, hidden_size, dtype=dtype, device=device)
             nn.init.zeros_(self.cross_attn_out_proj.weight)
             nn.init.zeros_(self.cross_attn_out_proj.bias)
 
-        self.norm2 = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
-        self.norm2_context = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
+        self.norm2 = ops.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6, dtype=dtype, device=device)
+        self.norm2_context = ops.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6, dtype=dtype, device=device)
 
-        self.ff = FeedForward(hidden_size, mult=mlp_ratio, activation_fn="gelu-approximate")
-        self.ff_context = FeedForward(hidden_size, mult=mlp_ratio, activation_fn="gelu-approximate")
+        self.ff = FeedForward(hidden_size, mult=mlp_ratio, activation_fn="gelu-approximate", dtype=dtype, device=device, operations=ops)
+        self.ff_context = FeedForward(hidden_size, mult=mlp_ratio, activation_fn="gelu-approximate", dtype=dtype, device=device, operations=ops)
 
     def forward(
         self,
@@ -897,6 +933,10 @@ class MotifVideoTransformer3DModel(ModelMixin, ConfigMixin, PeftAdapterMixin, Fr
         "MotifVideoSingleTransformerBlock",
         "MotifVideoPatchEmbed",
     ]
+    # Non-serializable constructor args that must NOT be captured into self.config.
+    # dtype: torch.dtype (non-JSON), device: str|torch.device, operations: class/module.
+    # Handled by ComfyUI at runtime; never part of the diffusers checkpoint config.
+    ignore_for_config = ["dtype", "device", "operations"]
 
     @register_to_config
     def __init__(
@@ -921,23 +961,39 @@ class MotifVideoTransformer3DModel(ModelMixin, ConfigMixin, PeftAdapterMixin, Fr
         base_latent_size: int | None = None,
         enable_text_cross_attention_dual: bool = False,
         enable_text_cross_attention_single: bool = False,
+        dtype=None,
+        device=None,
+        operations=None,
     ) -> None:
         super().__init__()
 
+        ops = operations or _get_default_ops()
         inner_dim = num_attention_heads * attention_head_dim
         out_channels = out_channels or in_channels
 
         # 1. Latent and condition embedders
-        self.x_embedder = MotifVideoPatchEmbed((patch_size_t, patch_size, patch_size), in_channels, inner_dim)
-        self.context_embedder = PixArtAlphaTextProjection(in_features=text_embed_dim, hidden_size=inner_dim)
+        self.x_embedder = MotifVideoPatchEmbed(
+            (patch_size_t, patch_size, patch_size), in_channels, inner_dim,
+            dtype=dtype, device=device, operations=ops,
+        )
+        self.context_embedder = LocalPixArtAlphaTextProjection(
+            in_features=text_embed_dim, hidden_size=inner_dim,
+            dtype=dtype, device=device, operations=ops,
+        )
 
         # First frame conditioning: Image conditioning embedders
         self.image_embed_dim = image_embed_dim
         if image_embed_dim is not None:
             # Project image embeddings from vision encoder to transformer dim
-            self.image_embedder = MotifVideoImageProjection(in_features=image_embed_dim, hidden_size=inner_dim)
+            self.image_embedder = MotifVideoImageProjection(
+                in_features=image_embed_dim, hidden_size=inner_dim,
+                dtype=dtype, device=device, operations=ops,
+            )
 
-        self.time_text_embed = MotifVideoConditionEmbedding(inner_dim, pooled_projection_dim)
+        self.time_text_embed = MotifVideoConditionEmbedding(
+            inner_dim, pooled_projection_dim,
+            dtype=dtype, device=device, operations=ops,
+        )
 
         # 2. RoPE
         self.rope = MotifVideoRotaryPosEmbed(
@@ -958,6 +1014,9 @@ class MotifVideoTransformer3DModel(ModelMixin, ConfigMixin, PeftAdapterMixin, Fr
                     qk_norm=qk_norm,
                     norm_type=norm_type,
                     enable_text_cross_attention=enable_text_cross_attention_dual,
+                    operations=operations,
+                    dtype=dtype,
+                    device=device,
                 )
                 for _ in range(num_layers)
             ]
@@ -977,6 +1036,9 @@ class MotifVideoTransformer3DModel(ModelMixin, ConfigMixin, PeftAdapterMixin, Fr
                     enable_text_cross_attention=enable_text_cross_attention_single
                     if i < num_encoder_single
                     else False,
+                    operations=operations,
+                    dtype=dtype,
+                    device=device,
                 )
                 for i in range(num_single_layers)
             ]
@@ -984,9 +1046,13 @@ class MotifVideoTransformer3DModel(ModelMixin, ConfigMixin, PeftAdapterMixin, Fr
 
         # 5. Output projection
         self.norm_out = AdaLayerNormContinuous(
-            inner_dim, inner_dim, elementwise_affine=False, eps=1e-6, norm_type=norm_type
+            inner_dim, inner_dim, elementwise_affine=False, eps=1e-6, norm_type=norm_type,
+            dtype=dtype, device=device, operations=ops,
         )
-        self.proj_out = nn.Linear(inner_dim, patch_size_t * patch_size * patch_size * out_channels)
+        self.proj_out = ops.Linear(
+            inner_dim, patch_size_t * patch_size * patch_size * out_channels,
+            dtype=dtype, device=device,
+        )
 
         # Verify cross-attention config matches actual block state.
         # Catches silent misconfiguration (e.g. checkpoint config with renamed keys).

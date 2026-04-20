@@ -39,7 +39,7 @@ from unittest.mock import patch
 
 import comfy.ops  # noqa: F401 — available now that the skip guard passed
 
-from models.transformer.transformer_motif_video import MotifVideoPatchEmbed, MotifVideoAdaNorm
+from models.transformer.transformer_motif_video import MotifVideoPatchEmbed, MotifVideoAdaNorm, MotifVideoImageProjection
 from models.transformer import transformer_motif_video as _tmv
 
 # ---------------------------------------------------------------------------
@@ -131,3 +131,39 @@ def test_adanorm_default_fallback_and_dtype():
     assert norm.linear.weight.device.type == "cuda", (
         f"Expected weight on cuda, got {norm.linear.weight.device.type}"
     )
+
+
+def test_image_projection_default_fallback_and_dtype():
+    """MotifVideoImageProjection.{norm_in,linear_1,linear_2,norm_out} must use
+    _get_default_ops() fallback with dtype/device propagated when operations=None."""
+    default_ops = comfy.ops.disable_weight_init
+    proj = MotifVideoImageProjection(
+        in_features=768, hidden_size=3072,
+        dtype=torch.float16, device="cuda",
+    )
+    for attr, expected_cls in [
+        ("norm_in", default_ops.LayerNorm),
+        ("linear_1", default_ops.Linear),
+        ("linear_2", default_ops.Linear),
+        ("norm_out", default_ops.LayerNorm),
+    ]:
+        layer = getattr(proj, attr)
+        assert type(layer) is expected_cls, f"{attr}: expected {expected_cls}, got {type(layer)}"
+        assert layer.weight.dtype == torch.float16, f"{attr}.weight.dtype"
+        assert layer.weight.device.type == "cuda", f"{attr}.weight.device"
+
+
+def test_image_projection_ops_injection():
+    """MotifVideoImageProjection must use injected operations' classes."""
+    class _MarkerLayerNorm(nn.LayerNorm):
+        pass
+    class _MarkerLinear(nn.Linear):
+        pass
+    class _MockOps:
+        LayerNorm = _MarkerLayerNorm
+        Linear = _MarkerLinear
+    proj = MotifVideoImageProjection(in_features=768, hidden_size=3072, operations=_MockOps)
+    assert isinstance(proj.norm_in, _MarkerLayerNorm)
+    assert isinstance(proj.linear_1, _MarkerLinear)
+    assert isinstance(proj.linear_2, _MarkerLinear)
+    assert isinstance(proj.norm_out, _MarkerLayerNorm)

@@ -615,13 +615,14 @@ class MotifVideoRotaryPosEmbed(nn.Module):
 
 
 class MotifVideoImageProjection(nn.Module):
-    def __init__(self, in_features: int, hidden_size: int):
+    def __init__(self, in_features: int, hidden_size: int, dtype=None, device=None, operations=None):
         super().__init__()
-        self.norm_in = nn.LayerNorm(in_features)
-        self.linear_1 = nn.Linear(in_features, in_features)
+        ops = operations or _get_default_ops()
+        self.norm_in = ops.LayerNorm(in_features, dtype=dtype, device=device)
+        self.linear_1 = ops.Linear(in_features, in_features, dtype=dtype, device=device)
         self.act_fn = nn.GELU()
-        self.linear_2 = nn.Linear(in_features, hidden_size)
-        self.norm_out = nn.LayerNorm(hidden_size)
+        self.linear_2 = ops.Linear(in_features, hidden_size, dtype=dtype, device=device)
+        self.norm_out = ops.LayerNorm(hidden_size, dtype=dtype, device=device)
 
     def forward(self, image_embeds: torch.Tensor) -> torch.Tensor:
         hidden_states = self.norm_in(image_embeds)

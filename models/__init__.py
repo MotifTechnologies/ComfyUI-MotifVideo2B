@@ -121,7 +121,8 @@ class MotifVideoModel(comfy.model_base.BaseModel):
         # Lazy import: keeps ComfyUI startup free of torch._inductor/SDP
         # global mutations. Side effects only happen when a MotifVideoModel
         # is actually instantiated in a running workflow.
-        from .compile_config import apply_compile
+        from .compile_config import apply_channels_last_3d, apply_compile
+        self.diffusion_model = apply_channels_last_3d(self.diffusion_model)
         self.diffusion_model = apply_compile(self.diffusion_model)
 
     # ------------------------------------------------------------------

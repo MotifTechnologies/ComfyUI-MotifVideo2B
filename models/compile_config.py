@@ -126,6 +126,22 @@ def _apply_global_config() -> None:
     logger.info("[MotifVideo] inductor/SDP global config applied (lazy, first apply_compile call)")
 
 
+def apply_channels_last_3d(transformer):
+    """transformer 를 channels_last_3d 메모리 포맷으로 변환한다 (in-place + return).
+
+    원본 `pipeline_setup_common.py:setup_sage_attention` 이 SageAttention 적용과
+    함께 호출하는 설정이지만, 메모리 레이아웃 자체는 SageAttention 과 독립이므로
+    별도 함수로 분리한다. 실패 시 skip (warning) — 다른 메모리 포맷이 이미 설정된
+    weight 에서 호출되는 등 엣지 케이스를 허용.
+    """
+    try:
+        transformer.to(memory_format=torch.channels_last_3d)
+        logger.info("[MotifVideo] channels_last_3d memory format applied")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[MotifVideo] channels_last_3d apply failed (%s) — skipping", exc)
+    return transformer
+
+
 def apply_compile(transformer):
     """transformer 를 torch.compile 로 감싸 반환.
 

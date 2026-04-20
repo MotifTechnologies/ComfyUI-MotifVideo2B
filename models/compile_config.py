@@ -149,6 +149,36 @@ def apply_channels_last_3d(transformer):
     return transformer
 
 
+def apply_sage_attention(transformer):
+    """transformer 의 모든 attention processor 를 xDiTMotifVideoAttnProcessor 로 교체.
+
+    포트 출처: motif-core `attention_processor.py:306-319 apply_sage_attention`.
+
+    sageattention 미설치 시 no-op (transformer 그대로 반환). 설치된 경우에만
+    processor 교체를 수행하며, 교체 후 forward 경로는 P1.1 의 `sage_ops.
+    dispatch_optimized_attention` 을 통해 SageAttention kernel 로 라우팅된다.
+    OptimizedModule wrapping 이 없으므로 ComfyUI ModelPatcher 의 dynamic
+    VRAM offload 와 호환된다.
+    """
+    from .sage_ops import _SAGE_AVAILABLE
+    if not _SAGE_AVAILABLE:
+        logger.info("[MotifVideo] sageattention unavailable — skipping apply_sage_attention")
+        return transformer
+
+    from .attention_processor import xDiTMotifVideoAttnProcessor
+
+    num_dual = len(transformer.transformer_blocks)
+    num_single = len(transformer.single_transformer_blocks)
+    for block in list(transformer.transformer_blocks) + list(transformer.single_transformer_blocks):
+        block.attn.processor = xDiTMotifVideoAttnProcessor()
+
+    logger.info(
+        "[MotifVideo] Patched %d dual + %d single attention layers with xDiTMotifVideoAttnProcessor",
+        num_dual, num_single,
+    )
+    return transformer
+
+
 def apply_compile(transformer):
     """transformer 를 torch.compile 로 감싸 반환.
 

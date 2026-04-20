@@ -524,3 +524,56 @@ def test_condition_embedding_no_pooled_projection():
     assert not hasattr(cond, "text_embedder"), (
         "text_embedder must not be created when pooled_projection_dim=None"
     )
+
+
+# ---------------------------------------------------------------------------
+# P3.2a — MotifVideoTransformer3DModel.__init__ signature + ignore_for_config
+# ---------------------------------------------------------------------------
+
+def test_transformer3d_register_to_config_sanity():
+    """MotifVideoTransformer3DModel must exclude dtype/device/operations from self.config.
+
+    These args are non-JSONable (torch.dtype / torch.device / class objects) and must
+    be handled by ComfyUI at runtime; they must not appear in the checkpoint config
+    saved via diffusers save_config() or to_config_dict().
+    """
+    from models.transformer.transformer_motif_video import MotifVideoTransformer3DModel
+
+    model = MotifVideoTransformer3DModel(
+        num_attention_heads=4,
+        attention_head_dim=64,
+        num_layers=1,
+        num_single_layers=1,
+        num_decoder_layers=0,
+        text_embed_dim=256,
+        image_embed_dim=None,
+        pooled_projection_dim=None,
+        rope_axes_dim=(16, 24, 24),
+        operations=comfy.ops.disable_weight_init,
+        dtype=torch.float16,
+        device="cuda",
+    )
+
+    # Verify exclusion across all 3 config surfaces: self.config, to_config_dict(),
+    # and save_config() (the actual JSON serialization path).
+    from pathlib import Path
+    import json, tempfile
+
+    config_dict = dict(model.config)
+    to_config = dict(model.to_config_dict())
+    with tempfile.TemporaryDirectory() as td:
+        model.save_config(td)
+        with open(Path(td) / "config.json") as f:
+            saved = json.load(f)
+
+    for surface_name, surface in [("self.config", config_dict), ("to_config_dict", to_config), ("save_config", saved)]:
+        for key in ("dtype", "device", "operations"):
+            assert key not in surface, (
+                f"{key!r} must NOT be in {surface_name}, but found: {surface.get(key)}"
+            )
+
+    # Positive case: regular args must still be present
+    assert config_dict.get("num_attention_heads") == 4
+    assert config_dict.get("attention_head_dim") == 64
+    assert to_config.get("num_attention_heads") == 4
+    assert saved.get("num_attention_heads") == 4

@@ -935,6 +935,10 @@ class MotifVideoTransformer3DModel(ModelMixin, ConfigMixin, PeftAdapterMixin, Fr
         "MotifVideoSingleTransformerBlock",
         "MotifVideoPatchEmbed",
     ]
+    # Non-serializable constructor args that must NOT be captured into self.config.
+    # dtype: torch.dtype (non-JSON), device: str|torch.device, operations: class/module.
+    # Handled by ComfyUI at runtime; never part of the diffusers checkpoint config.
+    ignore_for_config = ["dtype", "device", "operations"]
 
     @register_to_config
     def __init__(
@@ -959,6 +963,9 @@ class MotifVideoTransformer3DModel(ModelMixin, ConfigMixin, PeftAdapterMixin, Fr
         base_latent_size: int | None = None,
         enable_text_cross_attention_dual: bool = False,
         enable_text_cross_attention_single: bool = False,
+        dtype=None,
+        device=None,
+        operations=None,
     ) -> None:
         super().__init__()
 

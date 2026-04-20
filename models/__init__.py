@@ -118,6 +118,12 @@ class MotifVideoModel(comfy.model_base.BaseModel):
         self.diffusion_model = transformer
         self.diffusion_model.eval()
 
+        # Lazy import: keeps ComfyUI startup free of torch._inductor/SDP
+        # global mutations. Side effects only happen when a MotifVideoModel
+        # is actually instantiated in a running workflow.
+        from .compile_config import apply_compile
+        self.diffusion_model = apply_compile(self.diffusion_model)
+
     # ------------------------------------------------------------------
     # concat_cond: build the 17-channel prepend condition
     # ------------------------------------------------------------------

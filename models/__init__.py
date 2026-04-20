@@ -146,14 +146,14 @@ class MotifVideoModel(comfy.model_base.BaseModel):
             # 이미 wrap 된 상태면 skip (재호출 방지 + revert 후 stale 경로 방어)
             return self
 
-        # NOTE: apply_compile 호출은 reverted. torch.compile(OptimizedModule) 은
-        # ComfyUI ModelPatcher 의 dynamic VRAM offload 가 모델 파라미터를 탐색하는
-        # 경로와 구조적으로 충돌하여 "Force pre-loaded 838 weights" 현상과 VRAM
-        # 120GB 폭증을 유발했다. autotune/freezing 완화로도 offload 실패 자체는
-        # 해결 불가. 속도 회복은 SageAttention 이식(이슈 #16) 에서 처리한다.
-        # 04_log.md '2026-04-20 P3.1 최종 revert' 참조.
-        from .compile_config import apply_channels_last_3d
-        self.diffusion_model = apply_channels_last_3d(self.diffusion_model)
+        # NOTE: apply_compile / apply_channels_last_3d 둘 다 호출 제거 (P3.1 + P3.2 revert).
+        # - apply_compile: OptimizedModule wrapping 이 ComfyUI ModelPatcher offload 와
+        #   구조적 충돌 → VRAM 120GB 폭증 (04_log '2026-04-20 P3.1 최종 revert').
+        # - apply_channels_last_3d: compile/sage 없이 단독 적용 시 Conv3d/SDPA kernel 이
+        #   재배치된 stride 를 최적 알고리즘으로 매칭 못해 오히려 pessimization. main 대비
+        #   VRAM +10GB, 속도 -6x 관찰 (04_log '2026-04-20 P3.2 revert').
+        # 속도 회복은 SageAttention 이식(이슈 #16) 에서 처리한다. SageAttention 설치 후
+        # 이식 완료되면 channels_last_3d 를 함께 재도입할지 별도 판단.
         return self
 
     # ------------------------------------------------------------------

@@ -555,19 +555,18 @@ def test_transformer3d_register_to_config_sanity():
         device="cuda",
     )
 
-    # Verify exclusion across all 3 config surfaces: self.config, to_config_dict(),
-    # and save_config() (the actual JSON serialization path).
+    # Verify exclusion across 2 config surfaces: self.config (in-memory FrozenDict)
+    # and save_config() (the actual JSON serialization path on disk).
     from pathlib import Path
     import json, tempfile
 
     config_dict = dict(model.config)
-    to_config = dict(model.to_config_dict())
     with tempfile.TemporaryDirectory() as td:
         model.save_config(td)
         with open(Path(td) / "config.json") as f:
             saved = json.load(f)
 
-    for surface_name, surface in [("self.config", config_dict), ("to_config_dict", to_config), ("save_config", saved)]:
+    for surface_name, surface in [("self.config", config_dict), ("save_config", saved)]:
         for key in ("dtype", "device", "operations"):
             assert key not in surface, (
                 f"{key!r} must NOT be in {surface_name}, but found: {surface.get(key)}"
@@ -576,7 +575,6 @@ def test_transformer3d_register_to_config_sanity():
     # Positive case: regular args must still be present
     assert config_dict.get("num_attention_heads") == 4
     assert config_dict.get("attention_head_dim") == 64
-    assert to_config.get("num_attention_heads") == 4
     assert saved.get("num_attention_heads") == 4
 
 

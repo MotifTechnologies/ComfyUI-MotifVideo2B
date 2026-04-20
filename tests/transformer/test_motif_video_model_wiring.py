@@ -70,6 +70,10 @@ def _make_mock_config(*, manual_cast_dtype=None):
         "norm_type": "layer_norm",
         "enable_text_cross_attention_dual": False,
         "enable_text_cross_attention_single": False,
+        # ComfyUI sets this at checkpoint load time (weight storage dtype).
+        # Mock it so the wiring test verifies propagation of a real value
+        # rather than accidentally asserting None-passthrough.
+        "dtype": torch.float16,
     }
 
     cfg = MagicMock()

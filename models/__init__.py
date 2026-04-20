@@ -120,10 +120,14 @@ class MotifVideoModel(comfy.model_base.BaseModel):
             if k in _TRANSFORMER_PARAMS
         }
         print(f"[MotifVideo] transformer_kwargs: { {k: v for k, v in transformer_kwargs.items() if k in ('rope_theta', 'num_decoder_layers', 'num_layers', 'num_single_layers', 'num_attention_heads', 'enable_text_cross_attention_dual', 'enable_text_cross_attention_single')} }")
+        # Use unet_config.dtype (weight storage dtype) rather than self.get_dtype()
+        # — the latter reads self.diffusion_model.dtype which doesn't exist until
+        # transformer is constructed below. Matches comfy flux/sd3 conventions.
+        weight_dtype = original_unet_config.get("dtype", None)
         transformer = MotifVideoTransformer3DModel(
             **transformer_kwargs,
             operations=operations,
-            dtype=self.get_dtype(),
+            dtype=weight_dtype,
             device=device,
         )
         # NOTE: .to(dtype=bfloat16) 강제 cast 제거 — comfy.ops 가 weight load 시점에

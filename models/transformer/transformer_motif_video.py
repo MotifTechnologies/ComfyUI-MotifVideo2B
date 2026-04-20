@@ -22,7 +22,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 from diffusers.configuration_utils import ConfigMixin, register_to_config
 from diffusers.loaders import FromOriginalModelMixin, PeftAdapterMixin
-from diffusers.models.attention import FeedForward
 from diffusers.models.attention_processor import Attention, AttentionProcessor
 from diffusers.models.cache_utils import CacheMixin
 from diffusers.models.embeddings import (
@@ -32,11 +31,7 @@ from diffusers.models.embeddings import (
 )
 from diffusers.models.modeling_outputs import Transformer2DModelOutput
 from diffusers.models.modeling_utils import ModelMixin
-from diffusers.models.normalization import (
-    AdaLayerNormContinuous,
-    AdaLayerNormZero,
-)
-from models.transformer.ops_primitives import AdaLayerNormZeroSingle
+from diffusers.models.normalization import AdaLayerNormContinuous
 from diffusers.utils import USE_PEFT_BACKEND, logging, scale_lora_layers, unscale_lora_layers
 
 try:
@@ -46,7 +41,7 @@ except ImportError:
     TransformerBlockMetadata = None
 
 from .tread_mixin import is_tread_end, is_tread_start
-from .ops_primitives import _get_default_ops
+from .ops_primitives import AdaLayerNormZero, AdaLayerNormZeroSingle, FeedForward, _get_default_ops
 
 # Apply FSDP2 patches for activation checkpointing.
 # Please checkout models.transformers.accelerate_patch for more details.
@@ -755,13 +750,17 @@ class MotifVideoTransformerBlock(nn.Module):
         qk_norm: str = "rms_norm",
         norm_type: str = "layer_norm",
         enable_text_cross_attention: bool = False,
+        dtype=None,
+        device=None,
+        operations=None,
     ) -> None:
         super().__init__()
 
+        ops = operations or _get_default_ops()
         hidden_size = num_attention_heads * attention_head_dim
 
-        self.norm1 = AdaLayerNormZero(hidden_size, norm_type=norm_type)
-        self.norm1_context = AdaLayerNormZero(hidden_size, norm_type=norm_type)
+        self.norm1 = AdaLayerNormZero(hidden_size, norm_type=norm_type, dtype=dtype, device=device, operations=ops)
+        self.norm1_context = AdaLayerNormZero(hidden_size, norm_type=norm_type, dtype=dtype, device=device, operations=ops)
 
         self.attn = Attention(
             query_dim=hidden_size,
@@ -776,20 +775,22 @@ class MotifVideoTransformerBlock(nn.Module):
             qk_norm=qk_norm,
             eps=1e-6,
         )
+        if dtype is not None or device is not None:
+            self.attn = self.attn.to(dtype=dtype, device=device)
 
         self.enable_text_cross_attention = enable_text_cross_attention
         if enable_text_cross_attention:
-            self.cross_attn_query_proj = nn.Linear(hidden_size, hidden_size)
-            self.cross_attn_query_norm = nn.LayerNorm(hidden_size, eps=1e-6)
-            self.cross_attn_out_proj = nn.Linear(hidden_size, hidden_size)
+            self.cross_attn_query_proj = ops.Linear(hidden_size, hidden_size, dtype=dtype, device=device)
+            self.cross_attn_query_norm = ops.LayerNorm(hidden_size, eps=1e-6, dtype=dtype, device=device)
+            self.cross_attn_out_proj = ops.Linear(hidden_size, hidden_size, dtype=dtype, device=device)
             nn.init.zeros_(self.cross_attn_out_proj.weight)
             nn.init.zeros_(self.cross_attn_out_proj.bias)
 
-        self.norm2 = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
-        self.norm2_context = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
+        self.norm2 = ops.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6, dtype=dtype, device=device)
+        self.norm2_context = ops.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6, dtype=dtype, device=device)
 
-        self.ff = FeedForward(hidden_size, mult=mlp_ratio, activation_fn="gelu-approximate")
-        self.ff_context = FeedForward(hidden_size, mult=mlp_ratio, activation_fn="gelu-approximate")
+        self.ff = FeedForward(hidden_size, mult=mlp_ratio, activation_fn="gelu-approximate", dtype=dtype, device=device, operations=ops)
+        self.ff_context = FeedForward(hidden_size, mult=mlp_ratio, activation_fn="gelu-approximate", dtype=dtype, device=device, operations=ops)
 
     def forward(
         self,

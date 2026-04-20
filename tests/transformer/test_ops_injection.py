@@ -44,6 +44,7 @@ from models.transformer.transformer_motif_video import (
     MotifVideoAdaNorm,
     MotifVideoImageProjection,
     MotifVideoSingleTransformerBlock,
+    MotifVideoTransformerBlock,
 )
 from models.transformer import transformer_motif_video as _tmv
 
@@ -268,3 +269,150 @@ def test_single_transformer_block_ops_injection():
     assert type(block.proj_out) is _MarkerLinear2, (
         f"proj_out: expected _MarkerLinear2, got {type(block.proj_out)}"
     )
+
+
+# ---------------------------------------------------------------------------
+# P2.4 — MotifVideoTransformerBlock ops injection
+# ---------------------------------------------------------------------------
+
+def test_transformer_block_default_fallback_and_dtype():
+    """operations=None must fall back to comfy.ops.disable_weight_init with dtype/device propagated.
+
+    Uses enable_text_cross_attention=True to cover all injected layers.
+    self.attn must remain a diffusers Attention instance (not replaced by ops).
+    """
+    from diffusers.models.attention_processor import Attention as DiffusersAttention
+    from models.transformer.ops_primitives import (
+        AdaLayerNormZero as LocalAdaLNZero,
+        FeedForward as LocalFeedForward,
+    )
+
+    default_ops = comfy.ops.disable_weight_init
+    block = MotifVideoTransformerBlock(
+        num_attention_heads=24,
+        attention_head_dim=128,
+        mlp_ratio=4.0,
+        qk_norm="rms_norm",
+        norm_type="layer_norm",
+        enable_text_cross_attention=True,
+        dtype=torch.float16,
+        device="cuda",
+    )
+
+    # norm1 / norm1_context → local ops_primitives.AdaLayerNormZero
+    for attr in ("norm1", "norm1_context"):
+        layer = getattr(block, attr)
+        assert isinstance(layer, LocalAdaLNZero), (
+            f"{attr}: expected local AdaLayerNormZero, got {type(layer)}"
+        )
+
+    # cross_attn_query_proj / cross_attn_out_proj → default_ops.Linear
+    for attr in ("cross_attn_query_proj", "cross_attn_out_proj"):
+        layer = getattr(block, attr)
+        assert type(layer) is default_ops.Linear, (
+            f"{attr}: expected {default_ops.Linear}, got {type(layer)}"
+        )
+        assert layer.weight.dtype == torch.float16, f"{attr}.weight.dtype"
+        assert layer.weight.device.type == "cuda", f"{attr}.weight.device"
+
+    # cross_attn_query_norm → default_ops.LayerNorm
+    layer = block.cross_attn_query_norm
+    assert type(layer) is default_ops.LayerNorm, (
+        f"cross_attn_query_norm: expected {default_ops.LayerNorm}, got {type(layer)}"
+    )
+
+    # norm2 / norm2_context → default_ops.LayerNorm (elementwise_affine=False, no weight)
+    for attr in ("norm2", "norm2_context"):
+        layer = getattr(block, attr)
+        assert type(layer) is default_ops.LayerNorm, (
+            f"{attr}: expected {default_ops.LayerNorm}, got {type(layer)}"
+        )
+
+    # ff / ff_context → local ops_primitives.FeedForward
+    for attr in ("ff", "ff_context"):
+        layer = getattr(block, attr)
+        assert isinstance(layer, LocalFeedForward), (
+            f"{attr}: expected local FeedForward, got {type(layer)}"
+        )
+
+    # self.attn must remain diffusers Attention (not replaced — #18 scope)
+    assert isinstance(block.attn, DiffusersAttention), (
+        f"block.attn must remain diffusers Attention, got {type(block.attn)}"
+    )
+    # dtype propagated to attn via .to() — sample weight check
+    assert block.attn.to_q.weight.dtype == torch.float16, (
+        f"attn.to_q.weight.dtype expected float16, got {block.attn.to_q.weight.dtype}"
+    )
+    assert block.attn.to_q.weight.device.type == "cuda", (
+        f"attn.to_q.weight must be on cuda"
+    )
+
+
+def test_transformer_block_ops_injection():
+    """Explicit _MockOps injection: norm2/ff layers must use marker types.
+
+    Uses enable_text_cross_attention=True to cover all injected layers.
+    """
+    class _MarkerLayerNorm3(nn.LayerNorm):
+        pass
+
+    class _MarkerLinear3(nn.Linear):
+        pass
+
+    class _MockOps3:
+        LayerNorm = _MarkerLayerNorm3
+        Linear = _MarkerLinear3
+
+    from models.transformer.ops_primitives import (
+        AdaLayerNormZero as LocalAdaLNZero,
+        FeedForward as LocalFeedForward,
+    )
+
+    block = MotifVideoTransformerBlock(
+        num_attention_heads=4,
+        attention_head_dim=64,
+        mlp_ratio=4.0,
+        qk_norm="rms_norm",
+        norm_type="layer_norm",
+        enable_text_cross_attention=True,
+        operations=_MockOps3,
+    )
+
+    # norm1 / norm1_context — local AdaLayerNormZero (uses ops internally)
+    for attr in ("norm1", "norm1_context"):
+        layer = getattr(block, attr)
+        assert isinstance(layer, LocalAdaLNZero), (
+            f"{attr}: expected local AdaLayerNormZero, got {type(layer)}"
+        )
+
+    # cross_attn_query_proj / cross_attn_out_proj → _MarkerLinear3
+    for attr in ("cross_attn_query_proj", "cross_attn_out_proj"):
+        assert type(getattr(block, attr)) is _MarkerLinear3, (
+            f"{attr}: expected _MarkerLinear3, got {type(getattr(block, attr))}"
+        )
+
+    # cross_attn_query_norm → _MarkerLayerNorm3
+    assert type(block.cross_attn_query_norm) is _MarkerLayerNorm3, (
+        f"cross_attn_query_norm: expected _MarkerLayerNorm3, got {type(block.cross_attn_query_norm)}"
+    )
+
+    # norm2 / norm2_context → _MarkerLayerNorm3
+    for attr in ("norm2", "norm2_context"):
+        assert type(getattr(block, attr)) is _MarkerLayerNorm3, (
+            f"{attr}: expected _MarkerLayerNorm3, got {type(getattr(block, attr))}"
+        )
+
+    # ff / ff_context — local FeedForward with ops propagated to inner Linear layers.
+    # FeedForward structure: net[0] = GELU wrapper (contains proj), net[1] = Dropout, net[2] = Linear
+    for attr in ("ff", "ff_context"):
+        layer = getattr(block, attr)
+        assert isinstance(layer, LocalFeedForward), (
+            f"{attr}: expected local FeedForward, got {type(layer)}"
+        )
+        # Verify operations propagated into FeedForward internals.
+        assert type(layer.net[0].proj) is _MarkerLinear3, (
+            f"{attr}.net[0].proj: expected _MarkerLinear3, got {type(layer.net[0].proj)}"
+        )
+        assert type(layer.net[2]) is _MarkerLinear3, (
+            f"{attr}.net[2]: expected _MarkerLinear3, got {type(layer.net[2])}"
+        )

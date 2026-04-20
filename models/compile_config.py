@@ -96,9 +96,16 @@ def _apply_global_config() -> None:
         except Exception as exc:  # noqa: BLE001
             logger.warning("[MotifVideo] skip TRITON_MAX_BLOCK[X]=8192 (%s)", exc)
 
+    # ComfyUI 환경 분기: 원본 compile_configs.py 와 3종 설정만 다르다.
+    # - freezing=True → False : weight inline 로 인한 GPU 상주가 ComfyUI 의
+    #   dynamic VRAM offload 와 충돌하여 120GB 폭증을 유발함. offload 가능 상태 유지.
+    # - max_autotune_pointwise=True → False : autotune kernel variant 다수를 동시
+    #   유지해 VRAM 누적. 원본은 전용 프로세스라 견디지만 ComfyUI 공존 환경엔 부적합.
+    # - coordinate_descent_tuning=True → False : autotune 경로 추가 확장. 동일 사유.
+    # 04_log.md 'P3.1.1 VRAM 폭증 fix' 항목 참조.
     for path, value in (
         ("compile_threads", 1),
-        ("freezing", True),
+        ("freezing", False),
         ("permute_fusion", True),
         ("split_reductions", True),
         ("layout_optimization", False),
@@ -109,9 +116,9 @@ def _apply_global_config() -> None:
         ("triton.cudagraphs", False),
         ("aggressive_fusion", False),
         ("max_autotune_gemm", False),
-        ("max_autotune_pointwise", True),
+        ("max_autotune_pointwise", False),
         ("epilogue_fusion", True),
-        ("coordinate_descent_tuning", True),
+        ("coordinate_descent_tuning", False),
         ("cpp_wrapper", True),
         ("cpp.enable_kernel_profile", False),
     ):
@@ -175,7 +182,11 @@ def apply_compile(transformer):
     _apply_global_config()
 
     try:
-        return torch.compile(transformer, mode="reduce-overhead", fullgraph=True)
+        # mode 분기: 원본은 "reduce-overhead" 이나 해당 모드는 CUDA graph 기반
+        # buffer pre-allocation 을 시도 (cpp_wrapper=True 로 결국 skip 되지만
+        # 여전히 intermediate buffer pool 유지). ComfyUI 환경에서 VRAM 증가 원인
+        # 중 하나였음. "default" 로 전환하여 buffer 관리를 런타임 기본에 맡김.
+        return torch.compile(transformer, mode="default", fullgraph=True)
     except Exception as exc:  # noqa: BLE001
         logger.warning(
             "[MotifVideo] torch.compile wrap failed (%s) — returning uncompiled transformer. "

@@ -118,12 +118,43 @@ class MotifVideoModel(comfy.model_base.BaseModel):
         self.diffusion_model = transformer
         self.diffusion_model.eval()
 
-        # Lazy import: keeps ComfyUI startup free of torch._inductor/SDP
-        # global mutations. Side effects only happen when a MotifVideoModel
-        # is actually instantiated in a running workflow.
-        from .compile_config import apply_channels_last_3d, apply_compile
+        # NOTE: channels_last_3d / torch.compile은 __init__ 시점이 아니라
+        # load_model_weights() 이후에 적용해야 한다. apply_compile 이 만드는
+        # OptimizedModule 은 state_dict key prefix 가 "_orig_mod." 로 바뀌어
+        # ComfyUI 가 전달하는 `transformer_blocks.X` 형태 키와 전부 mismatch
+        # 되어 load_state_dict 가 unet missing 으로 처리한다. 결과적으로
+        # 파라미터가 로드되지 않고 random-init transformer 로 샘플링 →
+        # 출력이 노이즈. 아래 load_model_weights 오버라이드에서 처리한다.
+
+    # ------------------------------------------------------------------
+    # load_model_weights: apply channels_last_3d + torch.compile
+    # AFTER checkpoint state_dict has been loaded
+    # ------------------------------------------------------------------
+
+    def load_model_weights(self, sd, unet_prefix="", assign=False):
+        # 1) 원본 BaseModel 로직으로 state_dict 로드
+        super().load_model_weights(sd, unet_prefix=unet_prefix, assign=assign)
+
+        # 2) weight 로드 완료 후 메모리 레이아웃 + compile 적용 (1회만)
+        try:
+            import torch._dynamo.eval_frame as _dynamo_eval
+            _OptimizedModule = _dynamo_eval.OptimizedModule
+        except Exception:
+            _OptimizedModule = tuple()  # isinstance check no-op
+
+        if isinstance(self.diffusion_model, _OptimizedModule):
+            # 이미 wrap 된 상태면 skip (재호출 방지 + revert 후 stale 경로 방어)
+            return self
+
+        # NOTE: apply_compile 호출은 reverted. torch.compile(OptimizedModule) 은
+        # ComfyUI ModelPatcher 의 dynamic VRAM offload 가 모델 파라미터를 탐색하는
+        # 경로와 구조적으로 충돌하여 "Force pre-loaded 838 weights" 현상과 VRAM
+        # 120GB 폭증을 유발했다. autotune/freezing 완화로도 offload 실패 자체는
+        # 해결 불가. 속도 회복은 SageAttention 이식(이슈 #16) 에서 처리한다.
+        # 04_log.md '2026-04-20 P3.1 최종 revert' 참조.
+        from .compile_config import apply_channels_last_3d
         self.diffusion_model = apply_channels_last_3d(self.diffusion_model)
-        self.diffusion_model = apply_compile(self.diffusion_model)
+        return self
 
     # ------------------------------------------------------------------
     # concat_cond: build the 17-channel prepend condition

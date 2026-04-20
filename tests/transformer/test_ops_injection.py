@@ -756,3 +756,133 @@ def test_transformer3d_image_embedder_branch():
         assert type(layer) is default_ops.Linear, f"image_embedder.{attr}: expected Linear, got {type(layer)}"
         assert layer.weight.dtype == torch.float16
         assert layer.weight.device.type == "cuda"
+
+
+# ---------------------------------------------------------------------------
+# P3.2c — transformer_blocks / single_transformer_blocks ops propagation
+# ---------------------------------------------------------------------------
+
+def test_transformer3d_blocks_default_fallback_and_dtype():
+    """transformer_blocks and single_transformer_blocks must propagate dtype/device/ops
+    end-to-end into block-internal layers when operations=None (default fallback path).
+
+    Also covers the enable_text_cross_attention_dual=True branch so that
+    cross_attn_query_proj propagation is confirmed at the top-level model level.
+    """
+    from models.transformer.ops_primitives import (
+        AdaLayerNormZero as LocalAdaLNZero,
+        AdaLayerNormZeroSingle as LocalAdaLNZeroSingle,
+        FeedForward as LocalFeedForward,
+    )
+    default_ops = comfy.ops.disable_weight_init
+
+    model = _make_small_transformer3d(
+        dtype=torch.float16,
+        device="cuda",
+        enable_text_cross_attention_dual=True,
+        enable_text_cross_attention_single=True,
+    )
+
+    # --- transformer_blocks[0] ---
+    dual = model.transformer_blocks[0]
+
+    # norm1 → local AdaLayerNormZero; norm1.linear → default_ops.Linear with fp16/cuda
+    assert isinstance(dual.norm1, LocalAdaLNZero), (
+        f"transformer_blocks[0].norm1: expected local AdaLayerNormZero, got {type(dual.norm1)}"
+    )
+    assert type(dual.norm1.linear) is default_ops.Linear, (
+        f"transformer_blocks[0].norm1.linear: expected {default_ops.Linear}, got {type(dual.norm1.linear)}"
+    )
+    assert dual.norm1.linear.weight.dtype == torch.float16, "norm1.linear.weight.dtype"
+    assert dual.norm1.linear.weight.device.type == "cuda", "norm1.linear.weight.device"
+
+    # norm2 → default_ops.LayerNorm
+    assert type(dual.norm2) is default_ops.LayerNorm, (
+        f"transformer_blocks[0].norm2: expected {default_ops.LayerNorm}, got {type(dual.norm2)}"
+    )
+
+    # ff → local FeedForward; ff.net[0].proj and ff.net[2] → default_ops.Linear
+    assert isinstance(dual.ff, LocalFeedForward), (
+        f"transformer_blocks[0].ff: expected local FeedForward, got {type(dual.ff)}"
+    )
+    assert type(dual.ff.net[0].proj) is default_ops.Linear, (
+        f"ff.net[0].proj: expected {default_ops.Linear}, got {type(dual.ff.net[0].proj)}"
+    )
+    assert type(dual.ff.net[2]) is default_ops.Linear, (
+        f"ff.net[2]: expected {default_ops.Linear}, got {type(dual.ff.net[2])}"
+    )
+
+    # cross_attn_query_proj → default_ops.Linear (enable_text_cross_attention_dual=True branch)
+    assert type(dual.cross_attn_query_proj) is default_ops.Linear, (
+        f"transformer_blocks[0].cross_attn_query_proj: expected {default_ops.Linear}, "
+        f"got {type(dual.cross_attn_query_proj)}"
+    )
+
+    # --- single_transformer_blocks[0] ---
+    single = model.single_transformer_blocks[0]
+
+    # proj_mlp → default_ops.Linear with fp16/cuda
+    assert type(single.proj_mlp) is default_ops.Linear, (
+        f"single_transformer_blocks[0].proj_mlp: expected {default_ops.Linear}, got {type(single.proj_mlp)}"
+    )
+    assert single.proj_mlp.weight.dtype == torch.float16, "proj_mlp.weight.dtype"
+    assert single.proj_mlp.weight.device.type == "cuda", "proj_mlp.weight.device"
+
+    # norm → local AdaLayerNormZeroSingle with ops propagated to inner Linear
+    assert isinstance(single.norm, LocalAdaLNZeroSingle), (
+        f"single_transformer_blocks[0].norm: expected local AdaLayerNormZeroSingle, got {type(single.norm)}"
+    )
+    assert type(single.norm.linear) is default_ops.Linear, (
+        f"single_transformer_blocks[0].norm.linear: expected {default_ops.Linear}, got {type(single.norm.linear)}"
+    )
+    assert single.norm.linear.weight.dtype == torch.float16
+    assert single.norm.linear.weight.device.type == "cuda"
+
+
+def test_transformer3d_blocks_ops_injection():
+    """Explicit _MockOps3D injection must reach block-internal Linear/LayerNorm layers.
+
+    Sampling approach: checks 1-2 representative attributes per block type
+    rather than exhaustive coverage (covered by P2.3/P2.4 unit tests).
+    """
+    from models.transformer.ops_primitives import (
+        AdaLayerNormZero as LocalAdaLNZero,
+        FeedForward as LocalFeedForward,
+    )
+
+    class _MarkerConv3d3D(nn.Conv3d):
+        pass
+
+    class _MarkerLinear3D(nn.Linear):
+        pass
+
+    class _MarkerLayerNorm3D(nn.LayerNorm):
+        pass
+
+    class _MockOps3D:
+        Conv3d = _MarkerConv3d3D
+        Linear = _MarkerLinear3D
+        LayerNorm = _MarkerLayerNorm3D
+
+    model = _make_small_transformer3d(operations=_MockOps3D)
+
+    # transformer_blocks[0]: norm2 → _MarkerLayerNorm3D (ops.LayerNorm path)
+    assert type(model.transformer_blocks[0].norm2) is _MarkerLayerNorm3D, (
+        f"transformer_blocks[0].norm2: expected _MarkerLayerNorm3D, "
+        f"got {type(model.transformer_blocks[0].norm2)}"
+    )
+
+    # transformer_blocks[0]: ff is local FeedForward; net[2] → _MarkerLinear3D
+    assert isinstance(model.transformer_blocks[0].ff, LocalFeedForward), (
+        f"transformer_blocks[0].ff: expected local FeedForward, got {type(model.transformer_blocks[0].ff)}"
+    )
+    assert type(model.transformer_blocks[0].ff.net[2]) is _MarkerLinear3D, (
+        f"transformer_blocks[0].ff.net[2]: expected _MarkerLinear3D, "
+        f"got {type(model.transformer_blocks[0].ff.net[2])}"
+    )
+
+    # single_transformer_blocks[0]: proj_mlp → _MarkerLinear3D
+    assert type(model.single_transformer_blocks[0].proj_mlp) is _MarkerLinear3D, (
+        f"single_transformer_blocks[0].proj_mlp: expected _MarkerLinear3D, "
+        f"got {type(model.single_transformer_blocks[0].proj_mlp)}"
+    )

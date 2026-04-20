@@ -1014,6 +1014,9 @@ class MotifVideoTransformer3DModel(ModelMixin, ConfigMixin, PeftAdapterMixin, Fr
                     qk_norm=qk_norm,
                     norm_type=norm_type,
                     enable_text_cross_attention=enable_text_cross_attention_dual,
+                    operations=operations,
+                    dtype=dtype,
+                    device=device,
                 )
                 for _ in range(num_layers)
             ]
@@ -1033,6 +1036,9 @@ class MotifVideoTransformer3DModel(ModelMixin, ConfigMixin, PeftAdapterMixin, Fr
                     enable_text_cross_attention=enable_text_cross_attention_single
                     if i < num_encoder_single
                     else False,
+                    operations=operations,
+                    dtype=dtype,
+                    device=device,
                 )
                 for i in range(num_single_layers)
             ]

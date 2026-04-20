@@ -39,7 +39,12 @@ from unittest.mock import patch
 
 import comfy.ops  # noqa: F401 — available now that the skip guard passed
 
-from models.transformer.transformer_motif_video import MotifVideoPatchEmbed, MotifVideoAdaNorm, MotifVideoImageProjection
+from models.transformer.transformer_motif_video import (
+    MotifVideoPatchEmbed,
+    MotifVideoAdaNorm,
+    MotifVideoImageProjection,
+    MotifVideoSingleTransformerBlock,
+)
 from models.transformer import transformer_motif_video as _tmv
 
 # ---------------------------------------------------------------------------
@@ -167,3 +172,99 @@ def test_image_projection_ops_injection():
     assert isinstance(proj.linear_1, _MarkerLinear)
     assert isinstance(proj.linear_2, _MarkerLinear)
     assert isinstance(proj.norm_out, _MarkerLayerNorm)
+
+
+# ---------------------------------------------------------------------------
+# P2.3 — MotifVideoSingleTransformerBlock ops injection
+# ---------------------------------------------------------------------------
+
+def test_single_transformer_block_default_fallback_and_dtype():
+    """operations=None must fall back to comfy.ops.disable_weight_init with dtype/device propagated.
+
+    Tests enable_text_cross_attention=True to cover all injected layers.
+    self.attn must remain a diffusers Attention instance (not replaced).
+    """
+    from diffusers.models.attention_processor import Attention as DiffusersAttention
+    from models.transformer.ops_primitives import AdaLayerNormZeroSingle as LocalAdaLNZeroSingle
+
+    default_ops = comfy.ops.disable_weight_init
+    block = MotifVideoSingleTransformerBlock(
+        num_attention_heads=24,
+        attention_head_dim=128,
+        mlp_ratio=4.0,
+        qk_norm="rms_norm",
+        norm_type="layer_norm",
+        enable_text_cross_attention=True,
+        dtype=torch.float16,
+        device="cuda",
+    )
+
+    # cross_attn_query_proj / cross_attn_out_proj → default_ops.Linear
+    for attr in ("cross_attn_query_proj", "cross_attn_out_proj"):
+        layer = getattr(block, attr)
+        assert type(layer) is default_ops.Linear, f"{attr}: expected {default_ops.Linear}, got {type(layer)}"
+        assert layer.weight.dtype == torch.float16, f"{attr}.weight.dtype"
+        assert layer.weight.device.type == "cuda", f"{attr}.weight.device"
+
+    # cross_attn_query_norm → default_ops.LayerNorm
+    layer = block.cross_attn_query_norm
+    assert type(layer) is default_ops.LayerNorm, f"cross_attn_query_norm: expected {default_ops.LayerNorm}, got {type(layer)}"
+
+    # proj_mlp / proj_out → default_ops.Linear
+    for attr in ("proj_mlp", "proj_out"):
+        layer = getattr(block, attr)
+        assert type(layer) is default_ops.Linear, f"{attr}: expected {default_ops.Linear}, got {type(layer)}"
+        assert layer.weight.dtype == torch.float16, f"{attr}.weight.dtype"
+        assert layer.weight.device.type == "cuda", f"{attr}.weight.device"
+
+    # norm → local ops_primitives.AdaLayerNormZeroSingle (not diffusers)
+    assert isinstance(block.norm, LocalAdaLNZeroSingle), (
+        f"block.norm must be local AdaLayerNormZeroSingle, got {type(block.norm)}"
+    )
+
+    # self.attn must remain diffusers Attention (not replaced — #18 scope)
+    assert isinstance(block.attn, DiffusersAttention), (
+        f"block.attn must remain diffusers Attention, got {type(block.attn)}"
+    )
+
+
+def test_single_transformer_block_ops_injection():
+    """Explicit _MockOps injection: layers must be marker types.
+
+    Uses enable_text_cross_attention=True to cover the widest code path.
+    """
+    class _MarkerLayerNorm2(nn.LayerNorm):
+        pass
+
+    class _MarkerLinear2(nn.Linear):
+        pass
+
+    class _MockOps2:
+        LayerNorm = _MarkerLayerNorm2
+        Linear = _MarkerLinear2
+
+    block = MotifVideoSingleTransformerBlock(
+        num_attention_heads=4,
+        attention_head_dim=64,
+        mlp_ratio=4.0,
+        qk_norm="rms_norm",
+        norm_type="layer_norm",
+        enable_text_cross_attention=True,
+        operations=_MockOps2,
+    )
+
+    assert type(block.cross_attn_query_proj) is _MarkerLinear2, (
+        f"cross_attn_query_proj: expected _MarkerLinear2, got {type(block.cross_attn_query_proj)}"
+    )
+    assert type(block.cross_attn_query_norm) is _MarkerLayerNorm2, (
+        f"cross_attn_query_norm: expected _MarkerLayerNorm2, got {type(block.cross_attn_query_norm)}"
+    )
+    assert type(block.cross_attn_out_proj) is _MarkerLinear2, (
+        f"cross_attn_out_proj: expected _MarkerLinear2, got {type(block.cross_attn_out_proj)}"
+    )
+    assert type(block.proj_mlp) is _MarkerLinear2, (
+        f"proj_mlp: expected _MarkerLinear2, got {type(block.proj_mlp)}"
+    )
+    assert type(block.proj_out) is _MarkerLinear2, (
+        f"proj_out: expected _MarkerLinear2, got {type(block.proj_out)}"
+    )

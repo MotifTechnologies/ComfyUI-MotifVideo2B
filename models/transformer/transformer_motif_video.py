@@ -35,8 +35,8 @@ from diffusers.models.modeling_utils import ModelMixin
 from diffusers.models.normalization import (
     AdaLayerNormContinuous,
     AdaLayerNormZero,
-    AdaLayerNormZeroSingle,
 )
+from models.transformer.ops_primitives import AdaLayerNormZeroSingle
 from diffusers.utils import USE_PEFT_BACKEND, logging, scale_lora_layers, unscale_lora_layers
 
 try:
@@ -642,9 +642,13 @@ class MotifVideoSingleTransformerBlock(nn.Module):
         qk_norm: str = "rms_norm",
         norm_type: str = "layer_norm",
         enable_text_cross_attention: bool = False,
+        dtype=None,
+        device=None,
+        operations=None,
     ) -> None:
         super().__init__()
 
+        ops = operations or _get_default_ops()
         hidden_size = num_attention_heads * attention_head_dim
         mlp_dim = int(hidden_size * mlp_ratio)
 
@@ -660,19 +664,21 @@ class MotifVideoSingleTransformerBlock(nn.Module):
             eps=1e-6,
             pre_only=True,
         )
+        if dtype is not None or device is not None:
+            self.attn = self.attn.to(dtype=dtype, device=device)
 
         self.enable_text_cross_attention = enable_text_cross_attention
         if enable_text_cross_attention:
-            self.cross_attn_query_proj = nn.Linear(hidden_size, hidden_size)
-            self.cross_attn_query_norm = nn.LayerNorm(hidden_size, eps=1e-6)
-            self.cross_attn_out_proj = nn.Linear(hidden_size, hidden_size)
+            self.cross_attn_query_proj = ops.Linear(hidden_size, hidden_size, dtype=dtype, device=device)
+            self.cross_attn_query_norm = ops.LayerNorm(hidden_size, eps=1e-6, dtype=dtype, device=device)
+            self.cross_attn_out_proj = ops.Linear(hidden_size, hidden_size, dtype=dtype, device=device)
             nn.init.zeros_(self.cross_attn_out_proj.weight)
             nn.init.zeros_(self.cross_attn_out_proj.bias)
 
-        self.norm = AdaLayerNormZeroSingle(hidden_size, norm_type=norm_type)
-        self.proj_mlp = nn.Linear(hidden_size, mlp_dim)
+        self.norm = AdaLayerNormZeroSingle(hidden_size, norm_type=norm_type, dtype=dtype, device=device, operations=ops)
+        self.proj_mlp = ops.Linear(hidden_size, mlp_dim, dtype=dtype, device=device)
         self.act_mlp = nn.GELU(approximate="tanh")
-        self.proj_out = nn.Linear(hidden_size + mlp_dim, hidden_size)
+        self.proj_out = ops.Linear(hidden_size + mlp_dim, hidden_size, dtype=dtype, device=device)
 
     def forward(
         self,

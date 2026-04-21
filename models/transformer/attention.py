@@ -22,6 +22,13 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+try:
+    from ..sage_ops import dispatch_optimized_attention
+except ImportError:
+    # Fallback for direct file loading (e.g., spec_from_file_location in tests).
+    # Tests that exercise the sage branch must patch this attribute directly.
+    dispatch_optimized_attention = None  # type: ignore[assignment]
+
 
 # Local copy of `apply_rotary_emb` (same impl as transformer_motif_video.py:64-116).
 # Duplicated intentionally so attention.py has zero diffusers dependency; the copy
@@ -307,9 +314,23 @@ class MotifVideoAttention(nn.Module):
             value = torch.cat([value, encoder_value], dim=2)
 
         # 5. Attention
-        hidden_states = F.scaled_dot_product_attention(
-            query, key, value, attn_mask=attention_mask, dropout_p=0.0, is_causal=False
+        # Sage eligibility: use_sage flag + callable dispatcher + joint concat path
+        # (query_input is None, encoder_hidden_states present, add_q_proj present)
+        # + mask is None or [B, 1, 1, L+E] bool (sage_ops.py 3-condition contract).
+        _sage_mask_ok = attention_mask is None or (
+            attention_mask.dtype == torch.bool
+            and attention_mask.dim() == 4
+            and attention_mask.shape[0] == query.shape[0]
+            and attention_mask.shape[1] == 1
+            and attention_mask.shape[2] == 1
+            and attention_mask.shape[3] == query.shape[2]
         )
+        if self.use_sage and dispatch_optimized_attention is not None and query_input is None and encoder_hidden_states is not None and self.add_q_proj is not None and _sage_mask_ok:
+            hidden_states = dispatch_optimized_attention(query, key, value, attention_mask)
+        else:
+            hidden_states = F.scaled_dot_product_attention(
+                query, key, value, attn_mask=attention_mask, dropout_p=0.0, is_causal=False
+            )
         hidden_states = hidden_states.transpose(1, 2).flatten(2, 3)
         hidden_states = hidden_states.to(query.dtype)
 

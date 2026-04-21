@@ -778,21 +778,20 @@ class MotifVideoTransformerBlock(nn.Module):
         self.norm1 = AdaLayerNormZero(hidden_size, norm_type=norm_type, dtype=dtype, device=device, operations=ops)
         self.norm1_context = AdaLayerNormZero(hidden_size, norm_type=norm_type, dtype=dtype, device=device, operations=ops)
 
-        self.attn = Attention(
-            query_dim=hidden_size,
-            cross_attention_dim=None,
-            added_kv_proj_dim=hidden_size,
-            dim_head=attention_head_dim,
-            heads=num_attention_heads,
-            out_dim=hidden_size,
-            context_pre_only=False,
-            bias=True,
-            processor=MotifVideoAttnProcessor2_0(),
+        # P3.2 (#18): swap diffusers.Attention for ops-aware MotifVideoAttention.
+        # ops manages dtype/device; post-hoc `.to(dtype, device)` is gone.
+        self.attn = MotifVideoAttention(
+            num_attention_heads=num_attention_heads,
+            attention_head_dim=attention_head_dim,
             qk_norm=qk_norm,
+            pre_only=False,
+            added_kv=True,
             eps=1e-6,
+            bias=True,
+            dtype=dtype,
+            device=device,
+            operations=ops,
         )
-        if dtype is not None or device is not None:
-            self.attn = self.attn.to(dtype=dtype, device=device)
 
         self.enable_text_cross_attention = enable_text_cross_attention
         if enable_text_cross_attention:

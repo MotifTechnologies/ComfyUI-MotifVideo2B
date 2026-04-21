@@ -15,7 +15,7 @@
   5. 여러 블록 인스턴스 간 가중치 독립성
   6. .to(dtype/device) 수동 cast 패턴 부재 (grep 검증)
   7. legacy Attention(...) 생성 패턴 부재 (grep 검증)
-  8. Dual block 은 여전히 diffusers Attention 사용 (P3.2 이전 상태 유지)
+  8. Dual block P3.2 완료 — MotifVideoAttention 사용 확인
 
 diffusers stub 및 models namespace 사전 주입은 conftest.py 의 session-scoped
 autouse fixture (_diffusers_stub_session, _models_namespace_session) 가 담당한다.
@@ -543,18 +543,12 @@ def test_motif_video_attention_constructor_used_in_single_block_init():
 
 
 # ---------------------------------------------------------------------------
-# Test 8: Dual block 은 여전히 diffusers Attention 사용 (P3.2 이전 상태 유지)
+# Test 8: Dual block P3.2 완료 — MotifVideoAttention 사용 확인
 # ---------------------------------------------------------------------------
 
 def test_dual_block_still_uses_diffusers_attention():
-    """MotifVideoTransformerBlock(=Dual block) 의 self.attn 은 P3.2 이전이므로
-    아직 diffusers Attention 이어야 한다 (MotifVideoAttention 이면 P3.2 미완 상태에서
-    checkpoint 불일치 발생 가능)."""
-    try:
-        from diffusers.models.attention_processor import Attention as DiffusersAttention
-    except ImportError:
-        pytest.skip("diffusers 미설치 — Dual block 타입 확인 불가")
-
+    """P3.2 완료: MotifVideoTransformerBlock(=Dual block) 의 self.attn 은
+    MotifVideoAttention 이어야 한다."""
     num_heads, head_dim, _ = _small_dims()
     dual_block = MotifVideoTransformerBlock(
         num_attention_heads=num_heads,
@@ -562,17 +556,14 @@ def test_dual_block_still_uses_diffusers_attention():
         mlp_ratio=4.0,
         qk_norm="rms_norm",
     )
-    assert isinstance(dual_block.attn, DiffusersAttention), (
-        f"Dual block self.attn 이 DiffusersAttention 이어야 하는데 "
-        f"{type(dual_block.attn).__name__} 임 — P3.2 가 아직 시작되지 않았다면 버그."
-    )
-    assert not isinstance(dual_block.attn, MotifVideoAttention), (
-        "Dual block self.attn 이 MotifVideoAttention 으로 교체됨 — P3.2 범위 침범 의심."
+    assert isinstance(dual_block.attn, MotifVideoAttention), (
+        f"Dual block self.attn 이 MotifVideoAttention 이어야 하는데 "
+        f"{type(dual_block.attn).__name__} 임 — P3.2 교체 누락."
     )
 
 
 def test_dual_block_attn_type_name_not_motif():
-    """MotifVideoTransformerBlock.attn 의 __name__ 이 'MotifVideoAttention' 이면 안 됨."""
+    """P3.2 완료: MotifVideoTransformerBlock.attn 의 __name__ 이 'MotifVideoAttention' 이어야 함."""
     num_heads, head_dim, _ = _small_dims()
     dual_block = MotifVideoTransformerBlock(
         num_attention_heads=num_heads,
@@ -580,8 +571,9 @@ def test_dual_block_attn_type_name_not_motif():
         mlp_ratio=4.0,
         qk_norm="rms_norm",
     )
-    assert type(dual_block.attn).__name__ != "MotifVideoAttention", (
-        "Dual block attn 이 MotifVideoAttention 으로 교체됐다 — P3.1 스코프 침범."
+    assert type(dual_block.attn).__name__ == "MotifVideoAttention", (
+        "Dual block attn 이 MotifVideoAttention 이어야 하는데 "
+        f"{type(dual_block.attn).__name__} 임 — P3.2 교체 누락."
     )
 
 

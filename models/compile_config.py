@@ -172,17 +172,41 @@ def apply_sage_attention(transformer):
     _sage_ver = getattr(sageattention, "__version__", "unknown")
     from .attention_processor import xDiTMotifVideoAttnProcessor
 
-    num_dual = len(transformer.transformer_blocks)
-    num_single = len(transformer.single_transformer_blocks)
-    for block in list(transformer.transformer_blocks) + list(transformer.single_transformer_blocks):
-        block.attn.processor = xDiTMotifVideoAttnProcessor()
+    # P3.2 임시 가드: MotifVideoAttention 인스턴스는 processor 슬롯이 없어
+    # skip. P4.1 에서 use_sage=True 플래그 방식으로 교체되면 loop/log 전체 재작성.
+    patched_dual = 0
+    skipped_dual = 0
+    for block in transformer.transformer_blocks:
+        if hasattr(block.attn, "processor"):
+            block.attn.processor = xDiTMotifVideoAttnProcessor()
+            patched_dual += 1
+        else:
+            skipped_dual += 1
+
+    patched_single = 0
+    skipped_single = 0
+    for block in transformer.single_transformer_blocks:
+        if hasattr(block.attn, "processor"):
+            block.attn.processor = xDiTMotifVideoAttnProcessor()
+            patched_single += 1
+        else:
+            skipped_single += 1
 
     logger.info(
         "[MotifVideo] Patched %d dual + %d single attention layers with "
         "xDiTMotifVideoAttnProcessor (sageattention %s). "
         "Disable via MOTIFVIDEO_DISABLE_SAGE=1",
-        num_dual, num_single, _sage_ver,
+        patched_dual, patched_single, _sage_ver,
     )
+    if skipped_dual or skipped_single:
+        logger.warning(
+            "[MotifVideo] apply_sage_attention: skipped %d dual + %d single blocks "
+            "with no processor slot (MotifVideoAttention has no processor). "
+            "Sage kernel is NOT active for these blocks. This is expected during "
+            "the P3.2 -> P4.1 window of #18. Performance may regress until P4.1 "
+            "wires `use_sage=True`.",
+            skipped_dual, skipped_single,
+        )
     return transformer
 
 

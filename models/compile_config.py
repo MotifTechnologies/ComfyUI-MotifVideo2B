@@ -150,15 +150,18 @@ def apply_channels_last_3d(transformer):
 
 
 def apply_sage_attention(transformer):
-    """transformer 의 모든 attention processor 를 xDiTMotifVideoAttnProcessor 로 교체.
+    """MotifVideoTransformer 의 모든 블록에 sage attention 활성화 플래그 세팅.
 
-    포트 출처: motif-core `attention_processor.py:306-319 apply_sage_attention`.
+    P4.1 (#18): processor 대입 방식에서 `block.attn.use_sage = True` 플래그 방식으로
+    전환. MotifVideoAttention
+    의 forward 가 use_sage=True 일 때 dispatch_optimized_attention 경로를 타도록
+    P2.3 에서 이미 구현됨.
 
-    sageattention 미설치 시 no-op (transformer 그대로 반환). 설치된 경우에만
-    processor 교체를 수행하며, 교체 후 forward 경로는 P1.1 의 `sage_ops.
-    dispatch_optimized_attention` 을 통해 SageAttention kernel 로 라우팅된다.
-    OptimizedModule wrapping 이 없으므로 ComfyUI ModelPatcher 의 dynamic
-    VRAM offload 와 호환된다.
+    sageattention 미설치 환경 또는 MOTIFVIDEO_DISABLE_SAGE=1 설정 시 no-op 으로
+    반환 (기존 동작과 동일).
+
+    포트 출처: motif-core attention_processor.py:306-319 apply_sage_attention.
+    Phase 2 재조정으로 processor-based dispatch 에서 flag-based dispatch 로 전환.
     """
     from .sage_ops import _SAGE_AVAILABLE
     if os.environ.get("MOTIFVIDEO_DISABLE_SAGE") == "1":
@@ -170,16 +173,15 @@ def apply_sage_attention(transformer):
 
     import sageattention
     _sage_ver = getattr(sageattention, "__version__", "unknown")
-    from .attention_processor import xDiTMotifVideoAttnProcessor
 
     num_dual = len(transformer.transformer_blocks)
     num_single = len(transformer.single_transformer_blocks)
     for block in list(transformer.transformer_blocks) + list(transformer.single_transformer_blocks):
-        block.attn.processor = xDiTMotifVideoAttnProcessor()
+        block.attn.use_sage = True
 
     logger.info(
-        "[MotifVideo] Patched %d dual + %d single attention layers with "
-        "xDiTMotifVideoAttnProcessor (sageattention %s). "
+        "[MotifVideo] Activated sage attention on %d dual + %d single blocks "
+        "via use_sage=True (sageattention %s). "
         "Disable via MOTIFVIDEO_DISABLE_SAGE=1",
         num_dual, num_single, _sage_ver,
     )

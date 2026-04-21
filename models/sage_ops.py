@@ -75,12 +75,15 @@ def dispatch_optimized_attention(query, key, value, attention_mask):
 
     ⚠️ Call-site contract (원본 motif-pipelines 설계와 동일). 본 dispatcher 는
     generic attention 이 아니라 MotifVideo 의 **self-attention joint path
-    전용**이다. `xDiTMotifVideoAttnProcessor.__call__` 은 아래 조건에서만
-    이 함수를 부른다 (원본 attention_processor.py:50-104):
+    전용**이다. `MotifVideoAttention.forward` 는 아래 조건에서만 이 함수를
+    부른다 (P2.3 sage 분기 조건, #18):
 
     1. `query_input is None` → cross-attention query 경로가 아님.
-    2. 직전에 `query = torch.cat([query, encoder_query], dim=2)` 로 latent+text
-       를 합쳐 **query_len == key_len == value_len == L+E** 가 보장됨.
+    2. 직전에 joint concat 으로 **query_len == key_len == value_len == L+E** 가
+       보장됨. Single block 은 `torch.cat([hidden, encoder], dim=1)` 후 unified
+       to_q/k/v 로 처리 (seq-dim concat), Dual block 은 `add_q_proj` 후
+       `torch.cat([query, encoder_query], dim=2)` (마찬가지로 seq-dim concat) —
+       두 경로 모두 `query_len == key_len == L+E` 를 만족하므로 둘 다 dispatch 대상.
     3. `attention_mask` 는 `MotifVideoTransformer3DModel._create_attention_mask`
        가 만든 **joint mask**: shape `[B, 1, 1, L+E]`, dtype `torch.bool`, 앞쪽
        L 개의 latent token 은 강제 True, 뒤쪽 E 개는 `encoder_attention_mask`

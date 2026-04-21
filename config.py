@@ -45,15 +45,14 @@ class MotifVideo19B(supported_models_base.BASE):
     vae_key_prefix = ["vae."]
     text_encoder_key_prefix = ["text_encoders."]
 
-    # FP8 quantisation is temporarily disabled pending Phase 2 (#18).
-    # Phase 1 (#17) completed: MotifVideoTransformer3DModel now uses comfy.ops
-    # (manual_cast / fp8_ops) for all directly-created layers via operations
-    # injection. The remaining unwrapped path is the diffusers `Attention`
-    # inside each block — its internal to_q / to_k / to_v / to_out / QKNorm
-    # are still plain torch.nn.* and would crash under fp8 weight loading.
-    # Phase 2 (#18) will replace that with a comfy.ops-based Q/K/V module and
-    # then flip this to True.
-    optimizations = {"fp8": False}
+    # FP8 quantisation enabled. Phase 1 (#17) wrapped all directly-created
+    # layers with comfy.ops (manual_cast / fp8_ops); Phase 2 (#18) replaced
+    # the diffusers `Attention` inside each block with a comfy.ops-based
+    # MotifVideoAttention (to_q / to_k / to_v / to_out / QKNorm all ops-
+    # managed). With both phases shipped, `pick_operations(..., fp8_
+    # optimizations=True, ...)` routes every weight through fp8_ops at load
+    # time and the forward path stays numerically correct via manual_cast.
+    optimizations = {"fp8": True}
 
     def model_type(self, state_dict, prefix=""):
         return comfy.model_base.ModelType.FLOW

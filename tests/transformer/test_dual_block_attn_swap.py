@@ -216,10 +216,16 @@ def test_state_dict_keys_match_expected():
     assert actual == expected, f"mismatch: missing={expected - actual}, unexpected={actual - expected}"
 
 
-def test_sage_attention_guard_in_compile_config():
-    """hasattr 가드가 compile_config.py 에 존재. P4.1 에서 제거 예정."""
+def test_sage_flag_based_dispatch_in_compile_config():
+    """P4.1: apply_sage_attention 이 use_sage=True 방식으로 재작성됨."""
     src = (_REPO_ROOT / "models" / "compile_config.py").read_text()
-    assert 'hasattr(block.attn, "processor")' in src, (
-        "P3.2 임시 hasattr 가드 누락. P4.1 이전엔 apply_sage_attention 이 "
-        "MotifVideoAttention 에서 AttributeError 를 낸다."
+    # 새 방식
+    assert "block.attn.use_sage = True" in src, "P4.1: use_sage 플래그 세팅 누락"
+    # 레거시 방식 제거 확인
+    assert 'block.attn.processor = xDiTMotifVideoAttnProcessor()' not in src, (
+        "P4.1: legacy processor 대입 잔류. 제거 필요"
+    )
+    # P3.2 hasattr 가드 제거 확인
+    assert 'hasattr(block.attn, "processor")' not in src, (
+        "P4.1: P3.2 임시 hasattr 가드 잔류. 제거 필요"
     )

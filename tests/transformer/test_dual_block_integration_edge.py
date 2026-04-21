@@ -433,24 +433,21 @@ def _build_mock_transformer_with_dual_and_single(n_dual: int = 2, n_single: int 
 def test_apply_sage_attention_no_attribute_error_on_motif_video_attention():
     """apply_sage_attention() 을 MotifVideoAttention 기반 블록으로 호출 시
     AttributeError 없이 정상 반환한다.
-    hasattr 가드가 없으면 block.attn.processor = ... 에서 AttributeError 발생한다.
+    P4.1: use_sage=True 플래그 방식으로 설정하므로 AttributeError 는 발생하지 않는다.
 
     구현 방법: compile_config.apply_sage_attention 소스를 직접 파싱해
-    hasattr 가드가 있는 상태에서 블록 루프 로직만 재현한다.
+    use_sage 플래그 방식이 적용됐는지 확인하고, 블록 루프 로직을 재현한다.
     (relative import 우회 — _load_module 은 parent 없는 로드라 from .sage_ops import 불가)
     """
-    # compile_config.py 소스에서 블록 루프 + hasattr 가드 로직 추출
+    # compile_config.py 소스에서 P4.1 플래그 방식 확인
     src = (_MODELS_DIR / "compile_config.py").read_text(encoding="utf-8")
 
-    # hasattr 가드가 소스에 존재하는지 확인 (grep 검증 포함)
-    assert 'hasattr(block.attn, "processor")' in src, (
-        "P3.2 hasattr 가드가 compile_config.py 에 없음 — AttributeError 방어 불가."
+    # P4.1 use_sage 플래그가 소스에 존재하는지 확인
+    assert "block.attn.use_sage = True" in src, (
+        "P4.1 use_sage 플래그가 compile_config.py 에 없음."
     )
 
-    # 블록 루프 로직을 직접 재현하여 동작 검증
-    class _FakeXDiTProcessor:
-        pass
-
+    # 블록 루프 로직을 직접 재현하여 동작 검증 — AttributeError 없음
     transformer = _build_mock_transformer_with_dual_and_single(n_dual=2, n_single=2)
 
     all_blocks = (
@@ -458,35 +455,29 @@ def test_apply_sage_attention_no_attribute_error_on_motif_video_attention():
         + list(transformer.single_transformer_blocks)
     )
 
-    # hasattr 가드 로직 직접 실행 — AttributeError 가 발생하면 테스트 실패
+    # use_sage=True 플래그 방식 직접 실행 — AttributeError 가 발생하면 테스트 실패
     try:
         for block in all_blocks:
-            if hasattr(block.attn, "processor"):
-                block.attn.processor = _FakeXDiTProcessor()
+            block.attn.use_sage = True
     except AttributeError as e:
         pytest.fail(
-            f"hasattr 가드가 있음에도 AttributeError 발생: {e}\n"
-            "block.attn 자체에 접근하거나 다른 경로에서 예외가 발생."
+            f"use_sage=True 설정 시 AttributeError 발생: {e}\n"
+            "MotifVideoAttention 이 use_sage 속성을 허용해야 한다."
         )
 
-    # 결과: 모두 skip (MotifVideoAttention 은 processor 슬롯 없음)
-    patched = sum(1 for b in all_blocks if hasattr(b.attn, "processor"))
-    assert patched == 0, (
-        f"MotifVideoAttention 블록에 processor 가 설정됐다: {patched}개. "
-        "hasattr 가드가 True 를 반환하면 안 됨."
+    # 결과: 모든 블록에 use_sage=True 설정됨
+    activated = sum(1 for b in all_blocks if b.attn.use_sage is True)
+    assert activated == len(all_blocks), (
+        f"use_sage=True 설정된 블록 수 {activated} != 전체 {len(all_blocks)}."
     )
 
 
-def test_apply_sage_attention_zero_processor_set_for_motif_video_attention():
-    """P4.1 이전 임시 상태: apply_sage_attention 블록 루프 로직 기준으로
-    processor 가 설정된 block.attn 이 0개여야 한다.
-    MotifVideoAttention 은 processor 슬롯이 없으므로 hasattr 가드로 전부 skip 된다.
+def test_apply_sage_attention_sets_use_sage_true():
+    """P4.1: apply_sage_attention 블록 루프 로직 기준으로
+    모든 block.attn.use_sage 가 True 로 설정되어야 한다.
 
     compile_config.apply_sage_attention 의 relative import (_SAGE_AVAILABLE) 는
     _load_module 패턴에서 우회 불가하므로, 블록 루프 로직을 직접 재현해 검증한다."""
-    class _FakeXDiTProcessor:
-        pass
-
     transformer = _build_mock_transformer_with_dual_and_single(n_dual=3, n_single=2)
 
     all_blocks = (
@@ -496,13 +487,12 @@ def test_apply_sage_attention_zero_processor_set_for_motif_video_attention():
 
     # compile_config.apply_sage_attention 의 블록 루프 로직 직접 재현
     for block in all_blocks:
-        if hasattr(block.attn, "processor"):
-            block.attn.processor = _FakeXDiTProcessor()
+        block.attn.use_sage = True
 
-    patched_count = sum(1 for b in all_blocks if hasattr(b.attn, "processor"))
-    assert patched_count == 0, (
-        f"P4.1 이전 임시 상태: processor 가 설정된 block.attn 이 {patched_count}개여야 0개.\n"
-        "MotifVideoAttention 에는 processor 슬롯이 없으므로 hasattr 가드로 전부 skip 되어야 함."
+    activated_count = sum(1 for b in all_blocks if b.attn.use_sage is True)
+    assert activated_count == len(all_blocks), (
+        f"P4.1: use_sage=True 설정된 블록 수 {activated_count} != 전체 {len(all_blocks)}.\n"
+        "모든 MotifVideoAttention 블록에 use_sage=True 가 설정되어야 한다."
     )
 
 
@@ -745,23 +735,3 @@ def test_dual_block_add_q_proj_independence():
     )
 
 
-# ---------------------------------------------------------------------------
-# Test 12: P3.2 fold-in — warning log 존재 검증
-# ---------------------------------------------------------------------------
-
-def test_apply_sage_attention_warns_when_all_skipped():
-    """P3.2 window: MotifVideoAttention 이 모두 skip 되면 logger.warning 발동.
-
-    compile_config.apply_sage_attention 의 relative import (_SAGE_AVAILABLE) 는
-    _load_module 패턴에서 우회 불가하므로 소스 grep 으로 warning 패턴 존재 확인.
-    """
-    src = (_MODELS_DIR / "compile_config.py").read_text(encoding="utf-8")
-    assert "logger.warning" in src, (
-        "P3.2 fold-in: apply_sage_attention 에 warning log 누락"
-    )
-    assert "skipped" in src and "dual + %d single" in src, (
-        "P3.2 fold-in: skip 카운트 warning 누락 (skipped_dual / skipped_single)"
-    )
-    assert "P4.1" in src or "use_sage=True" in src, (
-        "P3.2 fold-in: P4.1 sunset 참조 또는 use_sage=True 참조 누락"
-    )

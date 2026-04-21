@@ -6,7 +6,6 @@
 - 포인트 3: 커스텀 operations 주입
 - 포인트 4 (심화): norm_q.weight.shape 및 타입 확인
 - 포인트 5: use_sage 기본값 False
-- 포인트 6: forward() → NotImplementedError (다른 에러 타입 구분)
 - 포인트 7: registered submodule 개수
 - 포인트 8: None attribute 가 state_dict 에 누출 안 됨
 - 포인트 9: eps 전파 (custom eps 가 RMSNorm 에 실제 적용되는지)
@@ -360,39 +359,9 @@ def test_point5_use_sage_default_false_dual():
 
 
 # ---------------------------------------------------------------------------
-# 포인트 6: forward() → NotImplementedError (다른 에러 타입은 실패)
+# 포인트 6 (P2.1 시점): forward() NotImplementedError 검증.
+# P2.2 에서 forward 가 구현되며 자연 obsolete → 삭제.
 # ---------------------------------------------------------------------------
-
-def test_point6_forward_raises_not_implemented_error():
-    """attn(...) 호출 시 NotImplementedError 가 raise 되어야 한다.
-    TypeError / AttributeError 등 다른 예외는 구현 오류.
-    """
-    num_heads, head_dim = _dims()
-    attn = MotifVideoAttention(
-        num_heads, head_dim, qk_norm="rms_norm", pre_only=True, added_kv=False
-    )
-    with pytest.raises(NotImplementedError):
-        # 임의 텐서로 호출 — 어떤 인자가 와도 NotImplementedError 여야 한다
-        dummy = torch.zeros(1, 4, num_heads * head_dim)
-        attn(dummy)
-
-
-def test_point6_forward_not_other_exception():
-    """forward 가 TypeError/AttributeError 등 다른 예외를 raise 하면 실패."""
-    num_heads, head_dim = _dims()
-    attn = MotifVideoAttention(
-        num_heads, head_dim, qk_norm="rms_norm", pre_only=False, added_kv=True
-    )
-    try:
-        dummy = torch.zeros(1, 4, num_heads * head_dim)
-        attn(dummy)
-        pytest.fail("forward 가 예외를 전혀 raise 하지 않음 — 구현 필요")
-    except NotImplementedError:
-        pass  # 정상
-    except Exception as exc:
-        pytest.fail(
-            f"forward 가 NotImplementedError 가 아닌 {type(exc).__name__} 를 raise 함: {exc}"
-        )
 
 
 # ---------------------------------------------------------------------------

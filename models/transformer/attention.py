@@ -16,9 +16,49 @@
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Optional, Tuple
 
+import torch
 import torch.nn as nn
+import torch.nn.functional as F
+
+
+# Local copy of `apply_rotary_emb` (same impl as transformer_motif_video.py:64-116).
+# Duplicated intentionally so attention.py has zero diffusers dependency; the copy
+# in transformer_motif_video.py will be removed in P4.2 alongside the legacy
+# MotifVideoAttnProcessor2_0, at which point transformer_motif_video.py will
+# import this one.
+def apply_rotary_emb(
+    x: torch.Tensor,
+    freqs_cis: Tuple[torch.Tensor, torch.Tensor],
+    use_real: bool = True,
+    use_real_unbind_dim: int = -1,
+) -> torch.Tensor:
+    if use_real:
+        cos, sin = freqs_cis
+        if cos.dim() == 2:
+            cos = cos.unsqueeze(0).unsqueeze(0)
+            sin = sin.unsqueeze(0).unsqueeze(0)
+        if cos.dim() != 4 or sin.dim() != 4:
+            raise RuntimeError(f"RoPE must be 2D or 4D, got cos={cos.dim()}D, sin={sin.dim()}D")
+        cos, sin = cos.to(x.device), sin.to(x.device)
+        if cos.size(-2) != x.size(-2) or cos.size(-1) != x.size(-1):
+            raise RuntimeError(
+                f"RoPE shape mismatch: rope[-2:]=({cos.size(-2)},{cos.size(-1)}) vs x[-2:]=({x.size(-2)},{x.size(-1)})"
+            )
+        if use_real_unbind_dim == -1:
+            x_real, x_imag = x.reshape(*x.shape[:-1], -1, 2).unbind(-1)
+            x_rotated = torch.stack([-x_imag, x_real], dim=-1).flatten(3)
+        elif use_real_unbind_dim == -2:
+            x_real, x_imag = x.reshape(*x.shape[:-1], 2, -1).unbind(-2)
+            x_rotated = torch.cat([-x_imag, x_real], dim=-1)
+        else:
+            raise ValueError(f"`use_real_unbind_dim={use_real_unbind_dim}` but should be -1 or -2.")
+        return (x.float() * cos + x_rotated.float() * sin).to(x.dtype)
+    x_rot = torch.view_as_complex(x.float().reshape(*x.shape[:-1], -1, 2))
+    freqs = freqs_cis.unsqueeze(2)
+    x_out = torch.view_as_real(x_rot * freqs).flatten(3)
+    return x_out.type_as(x)
 
 # ---------------------------------------------------------------------------
 # Default ops fallback (same pattern as ops_primitives._get_default_ops)
@@ -173,8 +213,118 @@ class MotifVideoAttention(nn.Module):
         # P2.3/P4.1 에서 apply_sage_attention 이 True 로 설정
         self.use_sage = False
 
-    def forward(self, *args, **kwargs):
-        raise NotImplementedError(
-            "MotifVideoAttention.forward is not implemented yet. "
-            "Implementation is scheduled for P2.2/P2.3."
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        encoder_hidden_states: Optional[torch.Tensor] = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        image_rotary_emb: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+        query_input: Optional[torch.Tensor] = None,
+        key_input: Optional[torch.Tensor] = None,
+        value_input: Optional[torch.Tensor] = None,
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+        # Cross-attention mode: query already projected externally (cross_attn_query_proj + norm),
+        # skip to_q and only apply reshape + norm_q + RoPE. K/V use to_k/to_v as normal.
+        if query_input is not None:
+            query = query_input.unflatten(2, (self.heads, -1)).transpose(1, 2)
+            key = self.to_k(key_input)
+            value = self.to_v(value_input)
+
+            key = key.unflatten(2, (self.heads, -1)).transpose(1, 2)
+            value = value.unflatten(2, (self.heads, -1)).transpose(1, 2)
+
+            if self.norm_q is not None:
+                query = self.norm_q(query)
+            if self.norm_k is not None:
+                key = self.norm_k(key)
+
+            if image_rotary_emb is not None:
+                query = apply_rotary_emb(query, image_rotary_emb)
+
+            hidden_states = F.scaled_dot_product_attention(
+                query, key, value, attn_mask=attention_mask, dropout_p=0.0, is_causal=False
+            )
+            hidden_states = hidden_states.transpose(1, 2).flatten(2, 3)
+            hidden_states = hidden_states.to(query.dtype)
+            return hidden_states, None
+
+        if self.add_q_proj is None and encoder_hidden_states is not None:
+            hidden_states = torch.cat([hidden_states, encoder_hidden_states], dim=1)
+
+        # 1. QKV projections
+        query = self.to_q(hidden_states)
+        key = self.to_k(hidden_states)
+        value = self.to_v(hidden_states)
+
+        query = query.unflatten(2, (self.heads, -1)).transpose(1, 2)
+        key = key.unflatten(2, (self.heads, -1)).transpose(1, 2)
+        value = value.unflatten(2, (self.heads, -1)).transpose(1, 2)
+
+        # 2. QK normalization
+        if self.norm_q is not None:
+            query = self.norm_q(query)
+        if self.norm_k is not None:
+            key = self.norm_k(key)
+
+        # 3. Rotational positional embeddings applied to latent stream
+        if image_rotary_emb is not None:
+            if self.add_q_proj is None and encoder_hidden_states is not None:
+                query = torch.cat(
+                    [
+                        apply_rotary_emb(query[:, :, : -encoder_hidden_states.shape[1]], image_rotary_emb),
+                        query[:, :, -encoder_hidden_states.shape[1] :],
+                    ],
+                    dim=2,
+                )
+                key = torch.cat(
+                    [
+                        apply_rotary_emb(key[:, :, : -encoder_hidden_states.shape[1]], image_rotary_emb),
+                        key[:, :, -encoder_hidden_states.shape[1] :],
+                    ],
+                    dim=2,
+                )
+            else:
+                query = apply_rotary_emb(query, image_rotary_emb)
+                key = apply_rotary_emb(key, image_rotary_emb)
+
+        # 4. Encoder condition QKV projection and normalization
+        if self.add_q_proj is not None and encoder_hidden_states is not None:
+            encoder_query = self.add_q_proj(encoder_hidden_states)
+            encoder_key = self.add_k_proj(encoder_hidden_states)
+            encoder_value = self.add_v_proj(encoder_hidden_states)
+
+            encoder_query = encoder_query.unflatten(2, (self.heads, -1)).transpose(1, 2)
+            encoder_key = encoder_key.unflatten(2, (self.heads, -1)).transpose(1, 2)
+            encoder_value = encoder_value.unflatten(2, (self.heads, -1)).transpose(1, 2)
+
+            if self.norm_added_q is not None:
+                encoder_query = self.norm_added_q(encoder_query)
+            if self.norm_added_k is not None:
+                encoder_key = self.norm_added_k(encoder_key)
+
+            query = torch.cat([query, encoder_query], dim=2)
+            key = torch.cat([key, encoder_key], dim=2)
+            value = torch.cat([value, encoder_value], dim=2)
+
+        # 5. Attention
+        hidden_states = F.scaled_dot_product_attention(
+            query, key, value, attn_mask=attention_mask, dropout_p=0.0, is_causal=False
         )
+        hidden_states = hidden_states.transpose(1, 2).flatten(2, 3)
+        hidden_states = hidden_states.to(query.dtype)
+
+        # 6. Output projection
+        if encoder_hidden_states is not None:
+            hidden_states, encoder_hidden_states = (
+                hidden_states[:, : -encoder_hidden_states.shape[1]],
+                hidden_states[:, -encoder_hidden_states.shape[1] :],
+            )
+
+            if self.to_out is not None:
+                hidden_states = self.to_out[0](hidden_states)
+                hidden_states = self.to_out[1](hidden_states)
+
+            if self.to_add_out is not None:
+                encoder_hidden_states = self.to_add_out(encoder_hidden_states)
+
+        return hidden_states, encoder_hidden_states

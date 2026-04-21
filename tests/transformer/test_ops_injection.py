@@ -187,7 +187,7 @@ def test_single_transformer_block_default_fallback_and_dtype():
     Tests enable_text_cross_attention=True to cover all injected layers.
     self.attn must remain a diffusers Attention instance (not replaced).
     """
-    from diffusers.models.attention_processor import Attention as DiffusersAttention
+    from models.transformer.attention import MotifVideoAttention
     from models.transformer.ops_primitives import AdaLayerNormZeroSingle as LocalAdaLNZeroSingle
 
     default_ops = comfy.ops.disable_weight_init
@@ -225,9 +225,9 @@ def test_single_transformer_block_default_fallback_and_dtype():
         f"block.norm must be local AdaLayerNormZeroSingle, got {type(block.norm)}"
     )
 
-    # self.attn must remain diffusers Attention (not replaced — #18 scope)
-    assert isinstance(block.attn, DiffusersAttention), (
-        f"block.attn must remain diffusers Attention, got {type(block.attn)}"
+    # self.attn must be MotifVideoAttention (P3.1/P3.2 complete)
+    assert isinstance(block.attn, MotifVideoAttention), (
+        f"block.attn must be MotifVideoAttention (#18 P3.1/P3.2 complete), got {type(block.attn)}"
     )
 
 
@@ -283,7 +283,7 @@ def test_transformer_block_default_fallback_and_dtype():
     Uses enable_text_cross_attention=True to cover all injected layers.
     self.attn must remain a diffusers Attention instance (not replaced by ops).
     """
-    from diffusers.models.attention_processor import Attention as DiffusersAttention
+    from models.transformer.attention import MotifVideoAttention
     from models.transformer.ops_primitives import (
         AdaLayerNormZero as LocalAdaLNZero,
         FeedForward as LocalFeedForward,
@@ -337,9 +337,9 @@ def test_transformer_block_default_fallback_and_dtype():
             f"{attr}: expected local FeedForward, got {type(layer)}"
         )
 
-    # self.attn must remain diffusers Attention (not replaced — #18 scope)
-    assert isinstance(block.attn, DiffusersAttention), (
-        f"block.attn must remain diffusers Attention, got {type(block.attn)}"
+    # self.attn must be MotifVideoAttention (P3.1/P3.2 complete)
+    assert isinstance(block.attn, MotifVideoAttention), (
+        f"block.attn must be MotifVideoAttention (#18 P3.1/P3.2 complete), got {type(block.attn)}"
     )
     # dtype propagated to attn via .to() — sample weight check
     assert block.attn.to_q.weight.dtype == torch.float16, (

@@ -236,6 +236,33 @@ def test_sage_negative_cross_attn():
     assert dispatch_mock.call_count == 0, f"expected dispatch called 0 times, got {dispatch_mock.call_count}"
 
 
+def test_sage_positive_single_block_joint_path():
+    """P2.3 fix: single block (pre_only=True, add_q_proj=None) + use_sage=True + encoder + bool mask → dispatch 1회."""
+    num_heads, head_dim, hidden = _dims()
+    attn = _single(num_heads, head_dim)
+    attn.use_sage = True
+
+    B, L, E = 2, 16, 8
+    hs = torch.randn(B, L, hidden)
+    eh = torch.randn(B, E, hidden)
+    mask = torch.ones(B, 1, 1, L + E, dtype=torch.bool)
+
+    dispatch_mock = mock.MagicMock(side_effect=_dispatch_spy_return)
+    sdpa_mock = mock.MagicMock(side_effect=_sdpa_spy_return)
+
+    _original_dispatch = _attn_mod.dispatch_optimized_attention
+    _attn_mod.dispatch_optimized_attention = dispatch_mock
+    try:
+        with mock.patch.object(_attn_mod.F, "scaled_dot_product_attention", sdpa_mock):
+            with torch.no_grad():
+                attn(hidden_states=hs, encoder_hidden_states=eh, attention_mask=mask)
+    finally:
+        _attn_mod.dispatch_optimized_attention = _original_dispatch
+
+    assert dispatch_mock.call_count == 1, f"single block joint path: dispatch 기대 1, 실제 {dispatch_mock.call_count}"
+    assert sdpa_mock.call_count == 0, f"single block joint path: SDPA 기대 0, 실제 {sdpa_mock.call_count}"
+
+
 def test_sage_negative_self_attn_no_encoder():
     """use_sage=True + encoder_hidden_states=None + single block → SDPA (joint concat never executed)."""
     num_heads, head_dim, hidden = _dims()

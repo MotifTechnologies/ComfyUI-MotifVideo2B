@@ -1,7 +1,7 @@
 """P2.3 sage 분기 엣지 케이스 — 기존 5개 시나리오 gap 보완.
 
 기존 test_attention_sage_branch.py 가 커버하지 않는 갭:
-  1.  단일 블록 + encoder=None + use_sage=True → SDPA (add_q_proj is None 조건 위반)
+  1.  단일 블록 + encoder=None + use_sage=True → SDPA (encoder 없으면 joint path 아님)
   2.  joint path + float dtype mask ([B,1,1,L+E] 형태지만 bool 아님) → SDPA (dtype 위반)
   3.  joint path + bool mask 이지만 shape [B,1,L,L+E] (3번째 차원 확장) → SDPA (shape 위반)
   4.  encoder 존재 + dual block + use_sage=True 이지만 mask.shape[-1] != L+E → SDPA
@@ -11,7 +11,7 @@
   8.  cross-attn 결정성: seed 고정 두 번 실행 → 동일 output
   9.  use_sage 런타임 동적 토글: False→True→False
  10.  sage fallback dtype 보존: float16 입력 시 dispatch 반환 dtype 유지
- 11.  encoder 있지만 add_q_proj is None (single block) + use_sage=True → SDPA
+ 11.  encoder 있고 single block (add_q_proj is None) + use_sage=True → sage (P2.3 fix)
 """
 from __future__ import annotations
 
@@ -184,23 +184,27 @@ def _run_with_spies(attn, *, hidden_states, encoder_hidden_states=None,
 
 # ---------------------------------------------------------------------------
 # 포인트 1: single block + use_sage=True + encoder=None → SDPA
-# (add_q_proj is None 조건 미충족 → sage 진입 금지)
+# (encoder 없으면 joint path 미진입 → sage 대상 아님)
 # ---------------------------------------------------------------------------
 
 def test_sage_single_block_no_encoder_uses_sdpa():
-    """use_sage=True + single block (add_q_proj is None) + encoder=None → SDPA, dispatch=0."""
+    """use_sage=True + single block + encoder=None → SDPA, dispatch=0.
+
+    encoder_hidden_states is None → joint path 미진입 → sage 분기 조건 불충족.
+    P2.3 fix(add_q_proj 조건 제거) 이후에도 encoder=None 경로는 변함없이 SDPA.
+    """
     _, _, hidden = _dims()
     attn = _single()
     attn.use_sage = True
 
     B, L = 2, 16
     hs = torch.randn(B, L, hidden)
-    mask = torch.ones(B, 1, 1, L, dtype=torch.bool)  # shape 맞아도 add_q_proj 없으면 안 됨
+    mask = torch.ones(B, 1, 1, L, dtype=torch.bool)  # encoder 없으므로 sage 진입 불가
 
     d_count, s_count = _run_with_spies(attn, hidden_states=hs, attention_mask=mask)
 
-    assert d_count == 0, f"single block: dispatch must not be called, got {d_count}"
-    assert s_count == 1, f"single block: SDPA must be called once, got {s_count}"
+    assert d_count == 0, f"single block no encoder: dispatch must not be called, got {d_count}"
+    assert s_count == 1, f"single block no encoder: SDPA must be called once, got {s_count}"
 
 
 # ---------------------------------------------------------------------------
@@ -504,12 +508,17 @@ def test_sage_branch_dtype_preserved_fp16():
 
 
 # ---------------------------------------------------------------------------
-# 포인트 11: encoder 있지만 single block (add_q_proj is None) + use_sage=True → SDPA
-# docstring 3조건: joint concat 이후 조건 위반
+# 포인트 11: encoder 있고 single block (add_q_proj is None) + use_sage=True → sage
+# P2.3 fix: Single block 도 seq-dim concat 으로 joint path → dispatch 대상
 # ---------------------------------------------------------------------------
 
-def test_sage_encoder_present_but_single_block_uses_sdpa():
-    """encoder_hidden_states 있어도 single block (add_q_proj None) + use_sage=True → SDPA."""
+def test_sage_encoder_present_single_block_uses_sage():
+    """P2.3 fix: single block (add_q_proj None) + encoder 있음 + use_sage=True → dispatch 1회.
+
+    Single block 은 torch.cat([hidden, encoder], dim=1) 후 unified to_q/k/v 로
+    처리하여 query_len == key_len == L+E 를 만족. add_q_proj 유무와 무관하게
+    joint path 이므로 sage dispatch 대상.
+    """
     _, _, hidden = _dims()
     # single block 은 added_kv=False → add_q_proj 없음
     attn = _single()
@@ -524,10 +533,10 @@ def test_sage_encoder_present_but_single_block_uses_sdpa():
         attn, hidden_states=hs, encoder_hidden_states=eh, attention_mask=mask
     )
 
-    assert d_count == 0, (
-        f"single block + encoder: dispatch 금지인데 {d_count}회 호출됨. "
-        "add_q_proj is None 인 경로에서 sage 분기 진입 → silent correctness bug"
+    assert d_count == 1, (
+        f"single block + encoder: dispatch 기대 1, 실제 {d_count}. "
+        "P2.3 fix: single block joint path 도 sage 대상"
     )
-    assert s_count == 1, (
-        f"single block + encoder: SDPA 기대 1, 실제 {s_count}"
+    assert s_count == 0, (
+        f"single block + encoder: SDPA 기대 0, 실제 {s_count}"
     )

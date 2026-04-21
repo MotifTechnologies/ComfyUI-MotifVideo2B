@@ -315,8 +315,11 @@ class MotifVideoAttention(nn.Module):
 
         # 5. Attention
         # Sage eligibility: use_sage flag + callable dispatcher + joint concat path
-        # (query_input is None, encoder_hidden_states present, add_q_proj present)
+        # (query_input is None, encoder_hidden_states present)
         # + mask is None or [B, 1, 1, L+E] bool (sage_ops.py 3-condition contract).
+        # P2.3 fix: add_q_proj is None 조건 제거 — Single block(seq-dim concat) 과
+        # Dual block(add_q_proj 후 seq-dim concat) 모두 query_len == key_len == L+E 를
+        # 만족하므로 둘 다 sage dispatch 대상. add_q_proj 유무와 무관.
         _sage_mask_ok = attention_mask is None or (
             attention_mask.dtype == torch.bool
             and attention_mask.dim() == 4
@@ -325,7 +328,7 @@ class MotifVideoAttention(nn.Module):
             and attention_mask.shape[2] == 1
             and attention_mask.shape[3] == query.shape[2]
         )
-        if self.use_sage and dispatch_optimized_attention is not None and query_input is None and encoder_hidden_states is not None and self.add_q_proj is not None and _sage_mask_ok:
+        if self.use_sage and dispatch_optimized_attention is not None and query_input is None and encoder_hidden_states is not None and _sage_mask_ok:
             hidden_states = dispatch_optimized_attention(query, key, value, attention_mask)
         else:
             hidden_states = F.scaled_dot_product_attention(

@@ -1,5 +1,3 @@
-# ARCHIVED: P4.2 완료 후 MotifVideoAttnProcessor2_0 삭제로 이 스크립트는 재실행 불가.
-# 체크인된 tests/transformer/fixtures/attention_golden_*.pt 파일이 단일 진실.
 """P2.2 golden fixture 재현 스크립트.
 
 P2.2 구현 시점에 살아있는 MotifVideoAttnProcessor2_0 의 __call__ 로직으로

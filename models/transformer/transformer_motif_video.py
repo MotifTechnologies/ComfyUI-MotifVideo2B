@@ -37,6 +37,7 @@ except ImportError:
     TransformerBlockRegistry = None
     TransformerBlockMetadata = None
 
+from .attention import MotifVideoAttention
 from .tread_mixin import is_tread_end, is_tread_start
 from .ops_primitives import (
     AdaLayerNormContinuous,
@@ -662,20 +663,20 @@ class MotifVideoSingleTransformerBlock(nn.Module):
         hidden_size = num_attention_heads * attention_head_dim
         mlp_dim = int(hidden_size * mlp_ratio)
 
-        self.attn = Attention(
-            query_dim=hidden_size,
-            cross_attention_dim=None,
-            dim_head=attention_head_dim,
-            heads=num_attention_heads,
-            out_dim=hidden_size,
-            bias=True,
-            processor=MotifVideoAttnProcessor2_0(),
+        # P3.1 (#18): swap diffusers.Attention for ops-aware MotifVideoAttention.
+        # ops manages dtype/device, so the post-hoc `.to(dtype, device)` cast is gone.
+        self.attn = MotifVideoAttention(
+            num_attention_heads=num_attention_heads,
+            attention_head_dim=attention_head_dim,
             qk_norm=qk_norm,
-            eps=1e-6,
             pre_only=True,
+            added_kv=False,
+            eps=1e-6,
+            bias=True,
+            dtype=dtype,
+            device=device,
+            operations=ops,
         )
-        if dtype is not None or device is not None:
-            self.attn = self.attn.to(dtype=dtype, device=device)
 
         self.enable_text_cross_attention = enable_text_cross_attention
         if enable_text_cross_attention:

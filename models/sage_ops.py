@@ -75,8 +75,8 @@ def dispatch_optimized_attention(query, key, value, attention_mask):
 
     ⚠️ Call-site contract (원본 motif-pipelines 설계와 동일). 본 dispatcher 는
     generic attention 이 아니라 MotifVideo 의 **self-attention joint path
-    전용**이다. `xDiTMotifVideoAttnProcessor.__call__` 은 아래 조건에서만
-    이 함수를 부른다 (원본 attention_processor.py:50-104):
+    전용**이다. `MotifVideoAttention.forward` 는 아래 조건에서만 이 함수를
+    부른다 (P2.3 sage 분기 조건, #18):
 
     1. `query_input is None` → cross-attention query 경로가 아님.
     2. 직전에 `query = torch.cat([query, encoder_query], dim=2)` 로 latent+text

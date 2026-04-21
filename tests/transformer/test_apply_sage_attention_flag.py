@@ -117,12 +117,17 @@ def test_no_legacy_hasattr_guard_in_compile_config():
     assert "block.attn.processor = xDiTMotifVideoAttnProcessor()" not in src
 
 
-def test_legacy_xdit_processor_import_possibly_removed():
-    """compile_config 에서 xDiTMotifVideoAttnProcessor import 불필요 여부 체크.
-    현재 P4.1 에서 제거 가능하나 P4.3 에서 attention_processor.py 전체 정리 시점이라
-    아직 남아있어도 통과 (경고 형태)."""
-    src = (_REPO_ROOT / "models" / "compile_config.py").read_text()
-    if "from .attention_processor import" in src:
-        # 유지해도 OK; P4.3 에서 정리
-        import warnings
-        warnings.warn("compile_config 에 xDiTMotifVideoAttnProcessor import 잔류 (P4.3 정리 예정)")
+def test_legacy_xdit_processor_import_removed():
+    """P4.3: attention_processor.py 삭제 후 어떤 파일도 xDiTMotifVideoAttnProcessor 를 import 하면 안 됨."""
+    for path_str in ("models/compile_config.py",):
+        src = (_REPO_ROOT / path_str).read_text()
+        assert "from .attention_processor import" not in src, (
+            f"{path_str}: attention_processor import 잔류. P4.3 후 제거 필요."
+        )
+        assert "xDiTMotifVideoAttnProcessor" not in src, (
+            f"{path_str}: xDiTMotifVideoAttnProcessor 참조 잔류."
+        )
+    # attention_processor.py 파일 자체 부재
+    assert not (_REPO_ROOT / "models" / "attention_processor.py").exists(), (
+        "models/attention_processor.py 가 여전히 존재. P4.3 에서 삭제 필요."
+    )

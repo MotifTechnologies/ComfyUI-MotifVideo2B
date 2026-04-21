@@ -1,0 +1,187 @@
+{
+  "single_block": {
+    "norm_k.weight": {
+      "shape": [
+        128
+      ],
+      "dtype": "float32"
+    },
+    "norm_q.weight": {
+      "shape": [
+        128
+      ],
+      "dtype": "float32"
+    },
+    "to_k.bias": {
+      "shape": [
+        1536
+      ],
+      "dtype": "float32"
+    },
+    "to_k.weight": {
+      "shape": [
+        1536,
+        1536
+      ],
+      "dtype": "float32"
+    },
+    "to_q.bias": {
+      "shape": [
+        1536
+      ],
+      "dtype": "float32"
+    },
+    "to_q.weight": {
+      "shape": [
+        1536,
+        1536
+      ],
+      "dtype": "float32"
+    },
+    "to_v.bias": {
+      "shape": [
+        1536
+      ],
+      "dtype": "float32"
+    },
+    "to_v.weight": {
+      "shape": [
+        1536,
+        1536
+      ],
+      "dtype": "float32"
+    }
+  },
+  "dual_block": {
+    "add_k_proj.bias": {
+      "shape": [
+        1536
+      ],
+      "dtype": "float32"
+    },
+    "add_k_proj.weight": {
+      "shape": [
+        1536,
+        1536
+      ],
+      "dtype": "float32"
+    },
+    "add_q_proj.bias": {
+      "shape": [
+        1536
+      ],
+      "dtype": "float32"
+    },
+    "add_q_proj.weight": {
+      "shape": [
+        1536,
+        1536
+      ],
+      "dtype": "float32"
+    },
+    "add_v_proj.bias": {
+      "shape": [
+        1536
+      ],
+      "dtype": "float32"
+    },
+    "add_v_proj.weight": {
+      "shape": [
+        1536,
+        1536
+      ],
+      "dtype": "float32"
+    },
+    "norm_added_k.weight": {
+      "shape": [
+        128
+      ],
+      "dtype": "float32"
+    },
+    "norm_added_q.weight": {
+      "shape": [
+        128
+      ],
+      "dtype": "float32"
+    },
+    "norm_k.weight": {
+      "shape": [
+        128
+      ],
+      "dtype": "float32"
+    },
+    "norm_q.weight": {
+      "shape": [
+        128
+      ],
+      "dtype": "float32"
+    },
+    "to_add_out.bias": {
+      "shape": [
+        1536
+      ],
+      "dtype": "float32"
+    },
+    "to_add_out.weight": {
+      "shape": [
+        1536,
+        1536
+      ],
+      "dtype": "float32"
+    },
+    "to_k.bias": {
+      "shape": [
+        1536
+      ],
+      "dtype": "float32"
+    },
+    "to_k.weight": {
+      "shape": [
+        1536,
+        1536
+      ],
+      "dtype": "float32"
+    },
+    "to_out.0.bias": {
+      "shape": [
+        1536
+      ],
+      "dtype": "float32"
+    },
+    "to_out.0.weight": {
+      "shape": [
+        1536,
+        1536
+      ],
+      "dtype": "float32"
+    },
+    "to_q.bias": {
+      "shape": [
+        1536
+      ],
+      "dtype": "float32"
+    },
+    "to_q.weight": {
+      "shape": [
+        1536,
+        1536
+      ],
+      "dtype": "float32"
+    },
+    "to_v.bias": {
+      "shape": [
+        1536
+      ],
+      "dtype": "float32"
+    },
+    "to_v.weight": {
+      "shape": [
+        1536,
+        1536
+      ],
+      "dtype": "float32"
+    }
+  },
+  "source_checkpoint": "/lustrefs/team-multimodal/checkpoints/base_checkpoint/model_cross_attn_18_550/transformer/diffusion_pytorch_model.safetensors",
+  "snapshot_date": "2026-04-21"
+}

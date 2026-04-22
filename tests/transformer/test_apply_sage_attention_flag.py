@@ -72,7 +72,7 @@ def test_apply_sage_attention_sets_use_sage_true_on_all_blocks(monkeypatch):
     sage_ops = _ensure_sage_ops_loaded()
     monkeypatch.setattr(sage_ops, "_SAGE_AVAILABLE", True)
     monkeypatch.setitem(sys.modules, "sageattention", types.SimpleNamespace(__version__="stub-0"))
-    monkeypatch.delenv("MOTIFVIDEO_DISABLE_SAGE", raising=False)
+    monkeypatch.setenv("MOTIFVIDEO_ENABLE_SAGE", "1")
 
     cc = _load_compile_config()
     t = _StubTransformer(n_dual=2, n_single=3)
@@ -87,20 +87,20 @@ def test_apply_sage_attention_sets_use_sage_true_on_all_blocks(monkeypatch):
 def test_apply_sage_attention_noop_when_env_disable(monkeypatch):
     sage_ops = _ensure_sage_ops_loaded()
     monkeypatch.setattr(sage_ops, "_SAGE_AVAILABLE", True)
-    monkeypatch.setenv("MOTIFVIDEO_DISABLE_SAGE", "1")
+    monkeypatch.delenv("MOTIFVIDEO_ENABLE_SAGE", raising=False)
 
     cc = _load_compile_config()
     t = _StubTransformer(n_dual=1, n_single=1)
     cc.apply_sage_attention(t)
 
     for b in list(t.transformer_blocks) + list(t.single_transformer_blocks):
-        assert b.attn.use_sage is False, "env disable 시 use_sage 건드리면 안 됨"
+        assert b.attn.use_sage is False, "env opt-in 없을 시 use_sage 건드리면 안 됨"
 
 
 def test_apply_sage_attention_noop_when_sage_unavailable(monkeypatch):
     sage_ops = _ensure_sage_ops_loaded()
     monkeypatch.setattr(sage_ops, "_SAGE_AVAILABLE", False)
-    monkeypatch.delenv("MOTIFVIDEO_DISABLE_SAGE", raising=False)
+    monkeypatch.setenv("MOTIFVIDEO_ENABLE_SAGE", "1")
 
     cc = _load_compile_config()
     t = _StubTransformer(n_dual=1, n_single=1)

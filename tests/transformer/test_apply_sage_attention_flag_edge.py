@@ -2,7 +2,7 @@
 
 기존 테스트 커버리지 분석:
   [COVERED] apply_sage_attention → 모든 block.attn.use_sage=True (flag 방식)
-  [COVERED] MOTIFVIDEO_DISABLE_SAGE=1 → use_sage 건드리지 않음
+  [COVERED] MOTIFVIDEO_ENABLE_SAGE 미설정 → use_sage 건드리지 않음 (기본 OFF)
   [COVERED] _SAGE_AVAILABLE=False → no-op
   [COVERED] hasattr(block.attn, "processor") 소스 grep 0건
   [COVERED] block.attn.processor = xDiTMotifVideoAttnProcessor() 소스 grep 0건
@@ -12,12 +12,12 @@
   G1. 두 번 호출 idempotent — 이미 use_sage=True 인 상태에서 재호출 OK
   G2. use_sage=False 수동 복원 가능 — 사용자가 False 로 되돌릴 수 있음
   G3. log 출력 검증 — caplog 기반 (sage 활성화 수 포함 메시지)
-  G4. early-return 경로의 use_sage 보존 — DISABLE 시 기존 False 유지 + True 도 유지
+  G4. early-return 경로의 use_sage 보존 — opt-in 없을 시 기존 False 유지 + True 도 유지
   G5. "Patched … xDiTMotifVideoAttnProcessor" 구문 소스 부재 확인
   G6. "skipped" warning 메시지(P3.2 hasattr 가드) 소스 부재 확인
   G7. sage 미설치 경로 log 문구 존재 확인 (skip 메시지)
   G8. 빈 transformer (block 수 0) — crash 없이 정상 반환
-  G9. MOTIFVIDEO_DISABLE_SAGE 이미 True인 블록도 건드리지 않음 (기존 True 보존)
+  G9. MOTIFVIDEO_ENABLE_SAGE 미설정 시 이미 True인 블록도 건드리지 않음 (기존 True 보존)
   G10. single_transformer_blocks 만 있는 transformer — use_sage=True 설정됨
 
 conftest.py 의 diffusers stub + models namespace 자동 주입 사용.
@@ -102,7 +102,7 @@ def test_apply_sage_attention_idempotent_double_call(monkeypatch):
     sage_ops = _ensure_sage_ops_loaded()
     monkeypatch.setattr(sage_ops, "_SAGE_AVAILABLE", True)
     monkeypatch.setitem(sys.modules, "sageattention", types.SimpleNamespace(__version__="stub-0"))
-    monkeypatch.delenv("MOTIFVIDEO_DISABLE_SAGE", raising=False)
+    monkeypatch.setenv("MOTIFVIDEO_ENABLE_SAGE", "1")
 
     cc = _load_compile_config()
     t = _StubTransformer(n_dual=2, n_single=2)
@@ -127,7 +127,7 @@ def test_apply_sage_attention_use_sage_manually_reversible(monkeypatch):
     sage_ops = _ensure_sage_ops_loaded()
     monkeypatch.setattr(sage_ops, "_SAGE_AVAILABLE", True)
     monkeypatch.setitem(sys.modules, "sageattention", types.SimpleNamespace(__version__="stub-0"))
-    monkeypatch.delenv("MOTIFVIDEO_DISABLE_SAGE", raising=False)
+    monkeypatch.setenv("MOTIFVIDEO_ENABLE_SAGE", "1")
 
     cc = _load_compile_config()
     t = _StubTransformer(n_dual=2, n_single=1)
@@ -155,7 +155,7 @@ def test_apply_sage_attention_logs_activation_count(monkeypatch, caplog):
     sage_ops = _ensure_sage_ops_loaded()
     monkeypatch.setattr(sage_ops, "_SAGE_AVAILABLE", True)
     monkeypatch.setitem(sys.modules, "sageattention", types.SimpleNamespace(__version__="stub-0"))
-    monkeypatch.delenv("MOTIFVIDEO_DISABLE_SAGE", raising=False)
+    monkeypatch.setenv("MOTIFVIDEO_ENABLE_SAGE", "1")
 
     cc = _load_compile_config()
     t = _StubTransformer(n_dual=2, n_single=3)
@@ -176,7 +176,7 @@ def test_apply_sage_attention_log_not_patched_xdit_phrase(monkeypatch, caplog):
     sage_ops = _ensure_sage_ops_loaded()
     monkeypatch.setattr(sage_ops, "_SAGE_AVAILABLE", True)
     monkeypatch.setitem(sys.modules, "sageattention", types.SimpleNamespace(__version__="stub-0"))
-    monkeypatch.delenv("MOTIFVIDEO_DISABLE_SAGE", raising=False)
+    monkeypatch.setenv("MOTIFVIDEO_ENABLE_SAGE", "1")
 
     cc = _load_compile_config()
     t = _StubTransformer(n_dual=1, n_single=1)
@@ -193,15 +193,15 @@ def test_apply_sage_attention_log_not_patched_xdit_phrase(monkeypatch, caplog):
 
 # ---------------------------------------------------------------------------
 # G4: early-return 경로의 use_sage 보존
-# G4a: DISABLE=1 + 기존 False → False 유지
-# G4b: DISABLE=1 + 기존 True  → True 유지 (건드리지 않음)
+# G4a: ENABLE 미설정 + 기존 False → False 유지
+# G4b: ENABLE 미설정 + 기존 True  → True 유지 (건드리지 않음)
 # ---------------------------------------------------------------------------
 
 def test_apply_sage_attention_disable_env_preserves_existing_false(monkeypatch):
-    """MOTIFVIDEO_DISABLE_SAGE=1 시 기존 use_sage=False 블록을 건드리지 않는다."""
+    """MOTIFVIDEO_ENABLE_SAGE 미설정 시 기존 use_sage=False 블록을 건드리지 않는다."""
     sage_ops = _ensure_sage_ops_loaded()
     monkeypatch.setattr(sage_ops, "_SAGE_AVAILABLE", True)
-    monkeypatch.setenv("MOTIFVIDEO_DISABLE_SAGE", "1")
+    monkeypatch.delenv("MOTIFVIDEO_ENABLE_SAGE", raising=False)
 
     cc = _load_compile_config()
     t = _StubTransformer(n_dual=2, n_single=2)
@@ -210,16 +210,16 @@ def test_apply_sage_attention_disable_env_preserves_existing_false(monkeypatch):
 
     all_blocks = list(t.transformer_blocks) + list(t.single_transformer_blocks)
     assert all(b.attn.use_sage is False for b in all_blocks), (
-        "MOTIFVIDEO_DISABLE_SAGE=1 경로에서 use_sage=False 가 변경됐다"
+        "MOTIFVIDEO_ENABLE_SAGE 미설정 경로에서 use_sage=False 가 변경됐다"
     )
 
 
 def test_apply_sage_attention_disable_env_preserves_existing_true(monkeypatch):
-    """MOTIFVIDEO_DISABLE_SAGE=1 시 이미 True 인 블록도 건드리지 않는다.
+    """MOTIFVIDEO_ENABLE_SAGE 미설정 시 이미 True 인 블록도 건드리지 않는다.
     early-return 이 순수 no-op 임을 검증한다."""
     sage_ops = _ensure_sage_ops_loaded()
     monkeypatch.setattr(sage_ops, "_SAGE_AVAILABLE", True)
-    monkeypatch.setenv("MOTIFVIDEO_DISABLE_SAGE", "1")
+    monkeypatch.delenv("MOTIFVIDEO_ENABLE_SAGE", raising=False)
 
     cc = _load_compile_config()
     # 미리 use_sage=True 로 설정된 블록
@@ -231,7 +231,7 @@ def test_apply_sage_attention_disable_env_preserves_existing_true(monkeypatch):
 
     all_blocks = list(t.transformer_blocks) + list(t.single_transformer_blocks)
     assert all(b.attn.use_sage is True for b in all_blocks), (
-        "MOTIFVIDEO_DISABLE_SAGE=1 에서 기존 True 블록이 False 로 변경됐다 — "
+        "MOTIFVIDEO_ENABLE_SAGE 미설정에서 기존 True 블록이 False 로 변경됐다 — "
         "early-return 이 use_sage 를 건드리면 안 된다"
     )
 
@@ -289,7 +289,7 @@ def test_apply_sage_attention_unavailable_noop_and_logs(monkeypatch, caplog):
     """_SAGE_AVAILABLE=False 경로에서 no-op + skip 관련 로그 메시지가 있어야 한다."""
     sage_ops = _ensure_sage_ops_loaded()
     monkeypatch.setattr(sage_ops, "_SAGE_AVAILABLE", False)
-    monkeypatch.delenv("MOTIFVIDEO_DISABLE_SAGE", raising=False)
+    monkeypatch.setenv("MOTIFVIDEO_ENABLE_SAGE", "1")
 
     cc = _load_compile_config()
     t = _StubTransformer(n_dual=1, n_single=1)
@@ -320,7 +320,7 @@ def test_apply_sage_attention_empty_transformer_no_crash(monkeypatch):
     sage_ops = _ensure_sage_ops_loaded()
     monkeypatch.setattr(sage_ops, "_SAGE_AVAILABLE", True)
     monkeypatch.setitem(sys.modules, "sageattention", types.SimpleNamespace(__version__="stub-0"))
-    monkeypatch.delenv("MOTIFVIDEO_DISABLE_SAGE", raising=False)
+    monkeypatch.setenv("MOTIFVIDEO_ENABLE_SAGE", "1")
 
     cc = _load_compile_config()
     t = _StubTransformer(n_dual=0, n_single=0)
@@ -330,17 +330,17 @@ def test_apply_sage_attention_empty_transformer_no_crash(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# G9: DISABLE=1 시 transformer에 블록이 있어도 루프 진입 안 함
+# G9: ENABLE 미설정 시 transformer에 블록이 있어도 루프 진입 안 함
 #     (early-return 위치가 루프 진입 전인지 구조적으로 확인)
 # ---------------------------------------------------------------------------
 
 def test_apply_sage_attention_disable_env_no_use_sage_set_on_any_block(monkeypatch):
-    """MOTIFVIDEO_DISABLE_SAGE=1 시 use_sage 세팅이 단 하나의 블록에도 일어나지 않는다.
+    """MOTIFVIDEO_ENABLE_SAGE 미설정 시 use_sage 세팅이 단 하나의 블록에도 일어나지 않는다.
     n_dual=5, n_single=5 로 통계적으로 확인한다."""
     sage_ops = _ensure_sage_ops_loaded()
     monkeypatch.setattr(sage_ops, "_SAGE_AVAILABLE", True)
     monkeypatch.setitem(sys.modules, "sageattention", types.SimpleNamespace(__version__="stub-0"))
-    monkeypatch.setenv("MOTIFVIDEO_DISABLE_SAGE", "1")
+    monkeypatch.delenv("MOTIFVIDEO_ENABLE_SAGE", raising=False)
 
     cc = _load_compile_config()
     t = _StubTransformer(n_dual=5, n_single=5)
@@ -349,7 +349,7 @@ def test_apply_sage_attention_disable_env_no_use_sage_set_on_any_block(monkeypat
     all_blocks = list(t.transformer_blocks) + list(t.single_transformer_blocks)
     activated = [b for b in all_blocks if b.attn.use_sage is True]
     assert len(activated) == 0, (
-        f"MOTIFVIDEO_DISABLE_SAGE=1 에서 {len(activated)}개 블록에 use_sage=True 가 세팅됐다. "
+        f"MOTIFVIDEO_ENABLE_SAGE 미설정에서 {len(activated)}개 블록에 use_sage=True 가 세팅됐다. "
         "early-return 이 루프 이전에 위치해야 한다."
     )
 
@@ -364,7 +364,7 @@ def test_apply_sage_attention_single_blocks_only(monkeypatch):
     sage_ops = _ensure_sage_ops_loaded()
     monkeypatch.setattr(sage_ops, "_SAGE_AVAILABLE", True)
     monkeypatch.setitem(sys.modules, "sageattention", types.SimpleNamespace(__version__="stub-0"))
-    monkeypatch.delenv("MOTIFVIDEO_DISABLE_SAGE", raising=False)
+    monkeypatch.setenv("MOTIFVIDEO_ENABLE_SAGE", "1")
 
     cc = _load_compile_config()
     t = _StubTransformer(n_dual=0, n_single=4)
@@ -382,7 +382,7 @@ def test_apply_sage_attention_dual_blocks_only(monkeypatch):
     sage_ops = _ensure_sage_ops_loaded()
     monkeypatch.setattr(sage_ops, "_SAGE_AVAILABLE", True)
     monkeypatch.setitem(sys.modules, "sageattention", types.SimpleNamespace(__version__="stub-0"))
-    monkeypatch.delenv("MOTIFVIDEO_DISABLE_SAGE", raising=False)
+    monkeypatch.setenv("MOTIFVIDEO_ENABLE_SAGE", "1")
 
     cc = _load_compile_config()
     t = _StubTransformer(n_dual=4, n_single=0)

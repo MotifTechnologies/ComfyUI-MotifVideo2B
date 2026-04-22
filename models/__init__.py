@@ -16,6 +16,8 @@ spurious 'transformer.' prefix. The ComfyUI calling convention is handled
 by monkey-patching the transformer's forward method.
 """
 
+import os
+
 import torch
 import comfy.model_base
 import comfy.conds
@@ -181,8 +183,9 @@ class MotifVideoModel(comfy.model_base.BaseModel):
         # 속도 회복 경로는 SageAttention 이식 (이슈 #16). attention processor 교체만 수행
         # 하므로 OptimizedModule wrapping 없음 → ModelPatcher offload 와 호환.
         # sageattention 미설치 환경에선 helper 가 자동 no-op.
-        from .compile_config import apply_sage_attention
-        self.diffusion_model = apply_sage_attention(self.diffusion_model)
+        if os.environ.get("MOTIFVIDEO_ENABLE_SAGE") == "1":
+            from .compile_config import apply_sage_attention
+            self.diffusion_model = apply_sage_attention(self.diffusion_model)
         return self
 
     # ------------------------------------------------------------------

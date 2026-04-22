@@ -157,15 +157,16 @@ def apply_sage_attention(transformer):
     의 forward 가 use_sage=True 일 때 dispatch_optimized_attention 경로를 타도록
     P2.3 에서 이미 구현됨.
 
-    sageattention 미설치 환경 또는 MOTIFVIDEO_DISABLE_SAGE=1 설정 시 no-op 으로
-    반환 (기존 동작과 동일).
+    기본값: OFF (no-op 반환). MOTIFVIDEO_ENABLE_SAGE=1 환경 변수로만 활성화(opt-in).
+    sageattention 미설치 환경에서도 no-op 으로 반환 (기존 동작 유지).
 
     포트 출처: motif-core attention_processor.py:306-319 apply_sage_attention.
     Phase 2 재조정으로 processor-based dispatch 에서 flag-based dispatch 로 전환.
+    P1 재조정으로 기본 OFF(opt-in) 폴라리티로 전환.
     """
     from .sage_ops import _SAGE_AVAILABLE
-    if os.environ.get("MOTIFVIDEO_DISABLE_SAGE") == "1":
-        logger.warning("[MotifVideo] MOTIFVIDEO_DISABLE_SAGE=1 — skipping apply_sage_attention")
+    if os.environ.get("MOTIFVIDEO_ENABLE_SAGE") != "1":
+        logger.info("[MotifVideo] sage attention disabled by default (set MOTIFVIDEO_ENABLE_SAGE=1 to opt-in)")
         return transformer
     if not _SAGE_AVAILABLE:
         logger.info("[MotifVideo] sageattention unavailable — skipping apply_sage_attention")
@@ -182,7 +183,7 @@ def apply_sage_attention(transformer):
     logger.info(
         "[MotifVideo] Activated sage attention on %d dual + %d single blocks "
         "via use_sage=True (sageattention %s). "
-        "Disable via MOTIFVIDEO_DISABLE_SAGE=1",
+        "Activated via MOTIFVIDEO_ENABLE_SAGE=1",
         num_dual, num_single, _sage_ver,
     )
     return transformer

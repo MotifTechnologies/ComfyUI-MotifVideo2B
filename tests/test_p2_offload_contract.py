@@ -161,6 +161,15 @@ def _build_sys_modules_stubs(
         monkeypatch.setitem(sys.modules, "torch", torch_mod)
 
     # ---- sys.modules 주입 (monkeypatch — 자동 cleanup) ----
+    # P2.fix: `from ..text_encoders.t5_gemma2 import ...` (relative) 가 resolve 되려면
+    # parent package (`ComfyUI_MotifVideo1_9B`) 및 child (`ComfyUI_MotifVideo1_9B.text_encoders`,
+    # `ComfyUI_MotifVideo1_9B.text_encoders.t5_gemma2`) 가 sys.modules 에 있어야 한다.
+    # `__package__` 도 테스트 로더에서 "ComfyUI_MotifVideo1_9B.models" 로 설정.
+    pkg_root_mod = types.ModuleType("ComfyUI_MotifVideo1_9B")
+    pkg_te_mod = types.ModuleType("ComfyUI_MotifVideo1_9B.text_encoders")
+    pkg_te_t5_mod = types.ModuleType("ComfyUI_MotifVideo1_9B.text_encoders.t5_gemma2")
+    pkg_te_t5_mod.MotifVideoT5Gemma2Model = t5gemma2_class
+
     entries = {
         "comfy": comfy_mod,
         "comfy.model_base": model_base_mod,
@@ -177,9 +186,14 @@ def _build_sys_modules_stubs(
         "models.latent_format": latent_mod,
         "models.compile_config": compile_mod,
         "models.transformer": transformer_mod,
-        # ComfyUI_MotifVideo1_9B.* 경로도 동일 stub
+        # ComfyUI_MotifVideo1_9B.* 경로 (relative import resolve 용, P2.fix)
+        "ComfyUI_MotifVideo1_9B": pkg_root_mod,
         "ComfyUI_MotifVideo1_9B.models.adapter": adapter_mod,
         "ComfyUI_MotifVideo1_9B.models.latent_format": latent_mod,
+        "ComfyUI_MotifVideo1_9B.models.compile_config": compile_mod,
+        "ComfyUI_MotifVideo1_9B.models.transformer": transformer_mod,
+        "ComfyUI_MotifVideo1_9B.text_encoders": pkg_te_mod,
+        "ComfyUI_MotifVideo1_9B.text_encoders.t5_gemma2": pkg_te_t5_mod,
     }
     for key, val in entries.items():
         monkeypatch.setitem(sys.modules, key, val)
@@ -202,7 +216,9 @@ def _load_motif_model_class(monkeypatch, free_memory_mock, loaded_models, t5gemm
 
     spec = importlib.util.spec_from_file_location(cache_key, _INIT_PY)
     mod = importlib.util.module_from_spec(spec)
-    mod.__package__ = "models"
+    # P2.fix: __package__ 를 2-레벨로 설정하여 `from ..text_encoders ...` relative import 가
+    # `ComfyUI_MotifVideo1_9B.text_encoders.t5_gemma2` 로 resolve 되도록.
+    mod.__package__ = "ComfyUI_MotifVideo1_9B.models"
     monkeypatch.setitem(sys.modules, cache_key, mod)
     spec.loader.exec_module(mod)
 
@@ -327,6 +343,30 @@ class TestP2AstStructure:
         assert "MotifVideoT5Gemma2Model" in src_text, (
             "apply_model 이 MotifVideoT5Gemma2Model 을 참조하지 않음 "
             "— T5Gemma2 식별 로직 없음"
+        )
+
+    def test_apply_model_uses_relative_import_for_t5gemma2(self, motif_class_node):
+        """P2.fix 반영: apply_model 내부의 MotifVideoT5Gemma2Model import 가
+        ImportFrom `level >= 1` (= relative import) 여야 한다.
+
+        ComfyUI 는 custom_node 를 `ComfyUI-MotifVideo1.9B` (dash 포함) 로 로드하므로
+        absolute import (`from text_encoders.t5_gemma2 ...`) 는 ModuleNotFoundError
+        발생 — P6.2 첫 실측에서 드러난 런타임 회귀.
+        """
+        method = self._get_method(motif_class_node, "apply_model")
+        assert method is not None, "apply_model 메서드 없음"
+        found_relative = False
+        for node in ast.walk(method):
+            if isinstance(node, ast.ImportFrom):
+                if node.module and "t5_gemma2" in node.module:
+                    assert node.level >= 1, (
+                        f"apply_model 내 t5_gemma2 import 가 absolute "
+                        f"(level={node.level}). ComfyUI custom_node 환경에서 dash 포함 "
+                        f"식별자는 absolute resolve 불가 → ModuleNotFoundError 발생."
+                    )
+                    found_relative = True
+        assert found_relative, (
+            "apply_model body 내 MotifVideoT5Gemma2Model 의 ImportFrom 문을 찾지 못함"
         )
 
     def test_apply_model_has_conditional_guard(self, motif_class_node):
@@ -703,7 +743,9 @@ class TestMemoryRequiredRealMethod:
         monkeypatch.delitem(sys.modules, cache_key, raising=False)
         spec = importlib.util.spec_from_file_location(cache_key, _INIT_PY)
         mod = importlib.util.module_from_spec(spec)
-        mod.__package__ = "models"
+        # P2.fix: __package__ 를 2-레벨로 설정하여 `from ..text_encoders ...` relative import 가
+        # `ComfyUI_MotifVideo1_9B.text_encoders.t5_gemma2` 로 resolve 되도록.
+        mod.__package__ = "ComfyUI_MotifVideo1_9B.models"
         monkeypatch.setitem(sys.modules, cache_key, mod)
         spec.loader.exec_module(mod)
         MotifVideoModel = mod.MotifVideoModel

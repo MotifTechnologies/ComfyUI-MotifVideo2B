@@ -177,7 +177,9 @@ class MotifVideoModel(comfy.model_base.BaseModel):
         # local import: circular import 방지
         # (text_encoders 는 models 를 import 하지 않으므로 실제 순환은 없으나
         #  top-level import 를 피해 의존 방향을 명시적으로 단방향으로 유지)
-        from text_encoders.t5_gemma2 import MotifVideoT5Gemma2Model
+        # P2.fix: absolute → relative. ComfyUI 는 custom_node 를 `ComfyUI-MotifVideo1.9B`
+        # 로 로드하는데 dash 포함 식별자는 absolute import 불가 — 반드시 relative.
+        from ..text_encoders.t5_gemma2 import MotifVideoT5Gemma2Model
 
         device = comfy.model_management.get_torch_device()
 

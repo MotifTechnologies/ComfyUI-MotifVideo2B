@@ -1,13 +1,11 @@
 diffusers>=0.35.2
-transformers>=5.0.0
-accelerate
+transformers>=5.5.4
 einops
-loguru
-peft
-sentencepiece
 
 # NOTE: sageattention 은 source build (nvcc + TORCH_CUDA_ARCH_LIST) 가 필요하여
 # requirements.txt 에 포함하지 않는다. 대신 install.py 가 CUDA 탐지 후 자동으로
 # `pip install sageattention --no-build-isolation` 를 실행한다. 5~15분 소요.
 # 빌드 실패해도 기본 attention 으로 fallback 되므로 노드는 정상 로드된다.
 # 수동 설치:  TORCH_CUDA_ARCH_LIST=<arch> pip install sageattention --no-build-isolation
+# sage 런타임 OFF 와 install 은 독립: MOTIFVIDEO_ENABLE_SAGE env gate(P1) 로 런타임 제어,
+# install.py 는 sage runtime OFF 여도 빌드 실행 (opt-in 시 즉시 활성 가능).

@@ -80,7 +80,12 @@ def sageattention_already_installed() -> bool:
 
 
 def install_sageattention(arch: str) -> bool:
-    """sageattention source build. 성공 True / 실패 False. 예외는 삼킨다."""
+    """sageattention source build. 성공 True / 실패 False. 예외는 삼킨다.
+
+    NOTE: sage 런타임 OFF 와 install 은 독립 (sage runtime OFF and install are independent).
+    런타임 활성화는 MOTIFVIDEO_ENABLE_SAGE env gate (P1) 로 제어하며,
+    이 함수는 env gate 와 무관하게 빌드만 담당한다 — opt-in 시 즉시 활성 가능하도록.
+    """
     env = os.environ.copy()
     env["TORCH_CUDA_ARCH_LIST"] = arch
     _log(f"Building sageattention for CUDA arch {arch}. Source build — 5~15 minutes expected.")

@@ -212,6 +212,20 @@ class MotifVideoModel(comfy.model_base.BaseModel):
         if attention_mask is not None:
             out["encoder_attention_mask"] = comfy.conds.CONDRegular(attention_mask)
 
+        # DEBUG: extra_conds 호출마다 mask/cross_attn 유무를 첫 1회만 출력.
+        # (매 sample step 반복 호출이 아니므로 플래그 가드 간소화)
+        if not getattr(MotifVideoModel, "_debug_extra_conds_printed", False):
+            MotifVideoModel._debug_extra_conds_printed = True
+            _am = attention_mask
+            print(
+                f"[MotifVideo DEBUG extra_conds] "
+                f"cross_attn_present={cross_attn is not None} "
+                f"attention_mask_present={_am is not None} "
+                f"attention_mask_shape={tuple(_am.shape) if _am is not None else None} "
+                f"out_has_encoder_mask={'encoder_attention_mask' in out}",
+                flush=True,
+            )
+
         pooled_projections = kwargs.get("pooled_projections", None)
         if pooled_projections is not None:
             out["pooled_projections"] = comfy.conds.CONDRegular(pooled_projections)

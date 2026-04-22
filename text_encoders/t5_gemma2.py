@@ -151,10 +151,11 @@ class MotifVideoT5Gemma2Model(nn.Module, ClipTokenWeightEncoder):
         # num_layers shim (SDClipModel compatibility)
         self.num_layers = encoder_config.text_config.num_hidden_layers
 
+        # DEBUG: instance id 포함하여 duplicate 생성 추적.
         logging.info(
-            "[MotifVideo] T5Gemma2Encoder initialised | device=%s dtype=%s hidden=%d layers=%d",
+            "[MotifVideo] T5Gemma2Encoder initialised | device=%s dtype=%s hidden=%d layers=%d id=0x%x",
             device, dtype, encoder_config.text_config.hidden_size,
-            self.num_layers,
+            self.num_layers, id(self),
         )
 
     def freeze(self):

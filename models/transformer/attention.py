@@ -23,6 +23,11 @@ import torch.nn as nn
 
 from comfy.ldm.modules.attention import optimized_attention
 
+# DEBUG: 첫 forward 호출 시 1회만 optimized_attention 의 실 backend + mask 상태 출력.
+# ComfyUI 가 자동 선택한 커널 (attention_pytorch/attention_flash/attention_xformers 등) 을
+# 확인하기 위함. 환경변수 MOTIFVIDEO_DEBUG_ATTN 미설정이면 완전 noop.
+_DEBUG_ATTN_PRINTED = False
+
 
 # Local copy of `apply_rotary_emb` (same impl as transformer_motif_video.py:64-116).
 # Duplicated intentionally so attention.py has zero diffusers dependency; the copy
@@ -240,6 +245,19 @@ class MotifVideoAttention(nn.Module):
             if image_rotary_emb is not None:
                 query = apply_rotary_emb(query, image_rotary_emb)
 
+            global _DEBUG_ATTN_PRINTED
+            if not _DEBUG_ATTN_PRINTED:
+                _DEBUG_ATTN_PRINTED = True
+                _m = attention_mask
+                print(
+                    f"[MotifVideo DEBUG attn(cross)] backend={optimized_attention.__name__} "
+                    f"mask_present={_m is not None} "
+                    f"mask_shape={tuple(_m.shape) if _m is not None else None} "
+                    f"mask_dtype={_m.dtype if _m is not None else None} "
+                    f"q={tuple(query.shape)} k={tuple(key.shape)} v={tuple(value.shape)}",
+                    flush=True,
+                )
+
             hidden_states = optimized_attention(query, key, value, self.heads, skip_reshape=True, mask=attention_mask)
             hidden_states = hidden_states.to(query.dtype)
             return hidden_states, None
@@ -303,6 +321,18 @@ class MotifVideoAttention(nn.Module):
             value = torch.cat([value, encoder_value], dim=2)
 
         # 5. Attention (ComfyUI optimized_attention — Flash/cuDNN/XFORMERS 자동 선택)
+        global _DEBUG_ATTN_PRINTED
+        if not _DEBUG_ATTN_PRINTED:
+            _DEBUG_ATTN_PRINTED = True
+            _m = attention_mask
+            print(
+                f"[MotifVideo DEBUG attn(joint)] backend={optimized_attention.__name__} "
+                f"mask_present={_m is not None} "
+                f"mask_shape={tuple(_m.shape) if _m is not None else None} "
+                f"mask_dtype={_m.dtype if _m is not None else None} "
+                f"q={tuple(query.shape)} k={tuple(key.shape)} v={tuple(value.shape)}",
+                flush=True,
+            )
         hidden_states = optimized_attention(query, key, value, self.heads, skip_reshape=True, mask=attention_mask)
         hidden_states = hidden_states.to(query.dtype)
 

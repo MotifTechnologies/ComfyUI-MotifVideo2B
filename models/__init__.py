@@ -331,7 +331,14 @@ class MotifVideoModel(comfy.model_base.BaseModel):
         if attention_mask is not None:
             out["encoder_attention_mask"] = comfy.conds.CONDRegular(attention_mask)
         elif cross_attn is not None:
-            # Auto-generate all-ones mask if text encoder didn't provide one.
+            # Fallback: auto-generate all-ones mask when the text encoder did not
+            # supply a padding mask.  This path is intentionally kept for backward
+            # compatibility with the standard CLIPTextEncode node, but it is a
+            # quality-divergence path: padded tokens participate in cross-attention,
+            # causing a training/inference distribution mismatch.  When
+            # MotifTextEncode is used, attention_mask is populated via
+            # MotifVideoT5Gemma2Model.encode_token_weights() and this branch is
+            # never reached.
             # Shape: [B, seq_len] matching cross_attn [B, seq_len, hidden_dim].
             out["encoder_attention_mask"] = comfy.conds.CONDRegular(
                 torch.ones(cross_attn.shape[:2], dtype=torch.bool, device=cross_attn.device)

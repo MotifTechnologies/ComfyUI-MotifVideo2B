@@ -208,6 +208,29 @@ class MotifVideoT5Gemma2Model(nn.Module, ClipTokenWeightEncoder):
             )
 
         hidden_state = outputs.last_hidden_state.float()
+
+        # 사용자 지시: attention_mask 는 downstream 으로 전달하지 않고, 여기서
+        # padded 뒷부분을 잘라 버림. HF PR #8 패턴 (use_attention_mask=False + padding trim).
+        # 의도: transformer cross-attention 에 seq_len=valid_len 만 보내 mask 생성 불필요 →
+        # SDPA 가 mask=None 경로로 cuDNN/Flash 자동 선택.
+        #
+        # 배치 안전성 (Codex HIGH 방어): 불균일 배치 (CFG 에서 positive/negative 길이 상이
+        # 등) 는 max trim 만으로는 짧은 sample 의 padded 잔재가 cross-attend 되어 의도치
+        # 않은 conditioning. 그 경우 trim 자체 포기하고 원본 반환. ComfyUI MotifVideo
+        # 표준 workflow 는 CFG 에서도 batch=1 로 개별 forward (실측 q=(1, 12, 114233, 128))
+        # 라 대부분 uniform 경로로 진입.
+        if attention_mask is not None and attention_mask.shape[0] >= 1:
+            valid_lens = attention_mask.sum(dim=1)  # [B]
+            first_len = valid_lens[0]
+            is_uniform = bool((valid_lens == first_len).all().item())
+            if is_uniform:
+                max_valid = int(first_len.item())
+                if 0 < max_valid < hidden_state.shape[1]:
+                    hidden_state = hidden_state[:, :max_valid, :].contiguous()
+            # else: 불균일 배치 — 원본 반환. padded 위치는 attend 되지만 crash 보다
+            #       safe 선택. uniform 조건 위반은 비표준 workflow 이므로 별도 대응
+            #       (추후 per-sample packed attention 으로 확장 가능).
+
         return hidden_state, None
 
     def encode_token_weights(self, token_weight_pairs):

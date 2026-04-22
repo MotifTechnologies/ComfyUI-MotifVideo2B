@@ -212,34 +212,21 @@ class MotifVideoModel(comfy.model_base.BaseModel):
         """Extend the base extra_conds with MotifVideo-specific conditioning.
 
         Keys added to the cond dict:
-          c_crossattn            — text encoder hidden states [B, E, D]
-          encoder_attention_mask — text token boolean mask [B, E]
+          c_crossattn            — text encoder hidden states [B, E, D] (padding trimmed in
+                                   MotifVideoT5Gemma2Model.encode — no mask needed downstream)
           pooled_projections     — pooled text embedding [B, D_pool] (optional)
           image_embeds           — vision encoder output [B, N, D] (I2V, optional)
+
+        attention_mask 는 의도적으로 cond dict 에 넣지 않는다. text_encoder 가 padded
+        뒷부분을 미리 잘라 valid text token 만 넘기므로 transformer 가 mask 없이
+        올바르게 cross-attention 수행. mask=None 경로로 PyTorch SDPA 가 cuDNN/Flash
+        백엔드를 자동 선택해 최고 속도. (Confluence H200 벤치 19.5s/step 경로)
         """
         out = super().extra_conds(**kwargs)
 
         cross_attn = kwargs.get("cross_attn", None)
         if cross_attn is not None:
             out["c_crossattn"] = comfy.conds.CONDRegular(cross_attn)
-
-        attention_mask = kwargs.get("attention_mask", None)
-        if attention_mask is not None:
-            out["encoder_attention_mask"] = comfy.conds.CONDRegular(attention_mask)
-
-        # DEBUG: extra_conds 호출마다 mask/cross_attn 유무를 첫 1회만 출력.
-        # (매 sample step 반복 호출이 아니므로 플래그 가드 간소화)
-        if not getattr(MotifVideoModel, "_debug_extra_conds_printed", False):
-            MotifVideoModel._debug_extra_conds_printed = True
-            _am = attention_mask
-            print(
-                f"[MotifVideo DEBUG extra_conds] "
-                f"cross_attn_present={cross_attn is not None} "
-                f"attention_mask_present={_am is not None} "
-                f"attention_mask_shape={tuple(_am.shape) if _am is not None else None} "
-                f"out_has_encoder_mask={'encoder_attention_mask' in out}",
-                flush=True,
-            )
 
         pooled_projections = kwargs.get("pooled_projections", None)
         if pooled_projections is not None:

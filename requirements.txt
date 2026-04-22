@@ -2,3 +2,4 @@
 diffusers>=0.35.2
 transformers>=5.5.4
 einops
+sentencepiece  # HF README 표준 동반. GemmaTokenizerFast 는 tokenizer.json 만으로 동작하지만 transformers 의 slow-tokenizer fallback / 타 tokenizer 변형 환경에서 필요 가능성.

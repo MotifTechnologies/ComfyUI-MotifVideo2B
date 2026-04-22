@@ -22,6 +22,7 @@ import torch
 import comfy.model_base
 import comfy.conds
 import comfy.ops
+import comfy.model_management
 
 from .transformer import MotifVideoTransformer3DModel
 
@@ -152,6 +153,77 @@ class MotifVideoModel(comfy.model_base.BaseModel):
         # 되어 load_state_dict 가 unet missing 으로 처리한다. 결과적으로
         # 파라미터가 로드되지 않고 random-init transformer 로 샘플링 →
         # 출력이 노이즈. 아래 load_model_weights 오버라이드에서 처리한다.
+
+    # ------------------------------------------------------------------
+    # apply_model: sequential offload (HF model_cpu_offload_seq equivalent)
+    # ------------------------------------------------------------------
+
+    def apply_model(self, x, t, c_concat=None, c_crossattn=None, control=None,
+                    transformer_options={}, **kwargs):
+        """Override to perform targeted unload of T5Gemma2 text encoder before denoising.
+
+        HF pipeline 의 model_cpu_offload_seq="text_encoder->transformer->vae" 와
+        동등 의미론으로, 우리 T5Gemma2 text encoder 만 targeted unload.
+        control / LoRA / hooks / patches 등은 절대 건드리지 않음 (Codex HIGH 리뷰 결과 반영).
+
+        HIGH_VRAM 환경(H200)에서 ComfyUI 의 smart memory 가 skip 하는 경우에 대비해
+        직접 unload. sequential_offload / unload_all_models 방식을 사용하지 않으므로
+        denoise time 에 참여하는 control, LoRA, hooks, patches, TREAD, TeaCache 등
+        보조 모델은 GPU 상태가 유지된다.
+
+        상태 기반 idempotent 구현: current_loaded_models 에서 MotifVideoT5Gemma2Model
+        인스턴스를 찾아 있으면 unload, 없으면 skip (이미 unload 된 상태면 no-op 자동).
+        """
+        # local import: circular import 방지
+        # (text_encoders 는 models 를 import 하지 않으므로 실제 순환은 없으나
+        #  top-level import 를 피해 의존 방향을 명시적으로 단방향으로 유지)
+        from text_encoders.t5_gemma2 import MotifVideoT5Gemma2Model
+
+        device = comfy.model_management.get_torch_device()
+
+        # current_loaded_models 순회하여 T5Gemma2 text encoder LoadedModel 식별.
+        # LoadedModel.model 은 ModelPatcher, .model.model 이 nn.Module(BaseModel 또는
+        # 직접 nn.Module 서브클래스). 두 경로 모두 체크.
+        text_encoder_lms = []
+        for lm in comfy.model_management.current_loaded_models:
+            if lm.model is None:
+                continue
+            # ModelPatcher 경로: lm.model.model → nn.Module
+            mp_model = getattr(lm.model, "model", None)
+            if isinstance(mp_model, MotifVideoT5Gemma2Model):
+                text_encoder_lms.append(lm)
+                continue
+            # 직접 nn.Module 경로: lm.model 자체가 MotifVideoT5Gemma2Model
+            if isinstance(lm.model, MotifVideoT5Gemma2Model):
+                text_encoder_lms.append(lm)
+
+        if text_encoder_lms:
+            # T5Gemma2 text encoder 만 targeted unload.
+            # keep_loaded = "T5Gemma2 이외의 모든 LoadedModel" 흑리스트 방식.
+            # control, LoRA, hooks, patches, 기타 모든 보조 모델은 keep 에 포함.
+            non_text_encoder_lms = [
+                lm for lm in comfy.model_management.current_loaded_models
+                if lm not in text_encoder_lms
+            ]
+            comfy.model_management.free_memory(1e30, device, keep_loaded=non_text_encoder_lms)
+
+        return super().apply_model(x, t, c_concat, c_crossattn, control,
+                                   transformer_options, **kwargs)
+
+    # ------------------------------------------------------------------
+    # memory_required: add activation peak margin for smart memory hint
+    # ------------------------------------------------------------------
+
+    def memory_required(self, input_shape, cond_shapes={}):
+        """Return memory estimate with activation peak margin.
+
+        HF sequential_offload 정렬 보조: normal_vram 환경에서 ComfyUI smart
+        memory 가 올바른 unload 결정을 내리도록 activation peak 여유를 1.3배
+        margin 으로 반영. HIGH_VRAM 환경에서는 apply_model 의 명시적 free_memory
+        호출이 주 역할이므로 본 메서드는 보조 역할만 함.
+        """
+        base = super().memory_required(input_shape, cond_shapes)
+        return base * 1.3
 
     # ------------------------------------------------------------------
     # load_model_weights: apply channels_last_3d + torch.compile

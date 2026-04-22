@@ -20,14 +20,13 @@ from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
-try:
-    from ..sage_ops import dispatch_optimized_attention
-except ImportError:
-    # Fallback for direct file loading (e.g., spec_from_file_location in tests).
-    # Tests that exercise the sage branch must patch this attribute directly.
-    dispatch_optimized_attention = None  # type: ignore[assignment]
+from comfy.ldm.modules.attention import optimized_attention
+
+# DEBUG: 첫 forward 호출 시 1회만 optimized_attention 의 실 backend + mask 상태 출력.
+# ComfyUI 가 자동 선택한 커널 (attention_pytorch/attention_flash/attention_xformers 등) 을
+# 확인하기 위함. 환경변수 MOTIFVIDEO_DEBUG_ATTN 미설정이면 완전 noop.
+_DEBUG_ATTN_PRINTED = False
 
 
 # Local copy of `apply_rotary_emb` (same impl as transformer_motif_video.py:64-116).
@@ -217,8 +216,6 @@ class MotifVideoAttention(nn.Module):
             self.norm_added_q = None
             self.norm_added_k = None
 
-        # P2.3/P4.1 에서 apply_sage_attention 이 True 로 설정
-        self.use_sage = False
 
     def forward(
         self,
@@ -230,6 +227,10 @@ class MotifVideoAttention(nn.Module):
         key_input: Optional[torch.Tensor] = None,
         value_input: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+        # DEBUG: global flag — forward 함수 최상단에 1회만 선언 (Python 은 같은 함수에서
+        # global 이후 재선언 시 SyntaxError).
+        global _DEBUG_ATTN_PRINTED
+
         # Cross-attention mode: query already projected externally (cross_attn_query_proj + norm),
         # skip to_q and only apply reshape + norm_q + RoPE. K/V use to_k/to_v as normal.
         if query_input is not None:
@@ -248,10 +249,19 @@ class MotifVideoAttention(nn.Module):
             if image_rotary_emb is not None:
                 query = apply_rotary_emb(query, image_rotary_emb)
 
-            hidden_states = F.scaled_dot_product_attention(
-                query, key, value, attn_mask=attention_mask, dropout_p=0.0, is_causal=False
-            )
-            hidden_states = hidden_states.transpose(1, 2).flatten(2, 3)
+            if not _DEBUG_ATTN_PRINTED:
+                _DEBUG_ATTN_PRINTED = True
+                _m = attention_mask
+                print(
+                    f"[MotifVideo DEBUG attn(cross)] backend={optimized_attention.__name__} "
+                    f"mask_present={_m is not None} "
+                    f"mask_shape={tuple(_m.shape) if _m is not None else None} "
+                    f"mask_dtype={_m.dtype if _m is not None else None} "
+                    f"q={tuple(query.shape)} k={tuple(key.shape)} v={tuple(value.shape)}",
+                    flush=True,
+                )
+
+            hidden_states = optimized_attention(query, key, value, self.heads, skip_reshape=True, mask=attention_mask)
             hidden_states = hidden_states.to(query.dtype)
             return hidden_states, None
 
@@ -313,28 +323,19 @@ class MotifVideoAttention(nn.Module):
             key = torch.cat([key, encoder_key], dim=2)
             value = torch.cat([value, encoder_value], dim=2)
 
-        # 5. Attention
-        # Sage eligibility: use_sage flag + callable dispatcher + joint concat path
-        # (query_input is None, encoder_hidden_states present)
-        # + mask is None or [B, 1, 1, L+E] bool (sage_ops.py 3-condition contract).
-        # P2.3 fix: add_q_proj is None 조건 제거 — Single block(seq-dim concat) 과
-        # Dual block(add_q_proj 후 seq-dim concat) 모두 query_len == key_len == L+E 를
-        # 만족하므로 둘 다 sage dispatch 대상. add_q_proj 유무와 무관.
-        _sage_mask_ok = attention_mask is None or (
-            attention_mask.dtype == torch.bool
-            and attention_mask.dim() == 4
-            and attention_mask.shape[0] == query.shape[0]
-            and attention_mask.shape[1] == 1
-            and attention_mask.shape[2] == 1
-            and attention_mask.shape[3] == query.shape[2]
-        )
-        if self.use_sage and dispatch_optimized_attention is not None and query_input is None and encoder_hidden_states is not None and _sage_mask_ok:
-            hidden_states = dispatch_optimized_attention(query, key, value, attention_mask)
-        else:
-            hidden_states = F.scaled_dot_product_attention(
-                query, key, value, attn_mask=attention_mask, dropout_p=0.0, is_causal=False
+        # 5. Attention (ComfyUI optimized_attention — Flash/cuDNN/XFORMERS 자동 선택)
+        if not _DEBUG_ATTN_PRINTED:
+            _DEBUG_ATTN_PRINTED = True
+            _m = attention_mask
+            print(
+                f"[MotifVideo DEBUG attn(joint)] backend={optimized_attention.__name__} "
+                f"mask_present={_m is not None} "
+                f"mask_shape={tuple(_m.shape) if _m is not None else None} "
+                f"mask_dtype={_m.dtype if _m is not None else None} "
+                f"q={tuple(query.shape)} k={tuple(key.shape)} v={tuple(value.shape)}",
+                flush=True,
             )
-        hidden_states = hidden_states.transpose(1, 2).flatten(2, 3)
+        hidden_states = optimized_attention(query, key, value, self.heads, skip_reshape=True, mask=attention_mask)
         hidden_states = hidden_states.to(query.dtype)
 
         # 6. Output projection

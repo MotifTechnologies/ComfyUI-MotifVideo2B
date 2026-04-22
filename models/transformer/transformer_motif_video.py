@@ -137,8 +137,16 @@ class MotifVideoConditionEmbedding(nn.Module):
         pooled_projection: torch.Tensor | None = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         timesteps_proj = self.time_proj(timestep)
+        # HF 원본 (bf16 weight 전제) 은 `next(parameters()).dtype` = bf16 로 cast.
+        # ComfyUI fp8 optimization 경로에서는 weight storage 가 fp8 이라 이 값이 fp8 →
+        # fp8 input + fp8 weight matmul 은 CUDA kernel 부재 (`addmm_cuda not implemented
+        # for Float8_e4m3fn`). fp8 storage 인 경우 cast 건너뛰고 `ops.Linear` 가 내부
+        # `cast_bias_weight` 로 weight 를 input dtype 으로 cast 하게 맡김.
         timestep_embedder_dtype = next(self.timestep_embedder.parameters()).dtype
-        conditioning = self.timestep_embedder(timesteps_proj.to(timestep_embedder_dtype))  # (N, D)
+        if timestep_embedder_dtype in (torch.float8_e4m3fn, torch.float8_e5m2):
+            conditioning = self.timestep_embedder(timesteps_proj)
+        else:
+            conditioning = self.timestep_embedder(timesteps_proj.to(timestep_embedder_dtype))  # (N, D)
         if pooled_projection is not None:
             conditioning = conditioning + self.text_embedder(pooled_projection)
 

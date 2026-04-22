@@ -22,8 +22,6 @@ import comfy.conds
 import comfy.ops
 
 from .transformer import MotifVideoTransformer3DModel
-
-from .adapter import MotifVideoModelAdapter
 from .latent_format import MotifVideoLatent
 
 
@@ -96,12 +94,27 @@ class MotifVideoModel(comfy.model_base.BaseModel):
         # custom_operations override takes precedence; otherwise pick_operations chooses
         # manual_cast / fp8_ops / disable_weight_init depending on model_config and dtype.
         if model_config.custom_operations is None:
-            fp8 = model_config.optimizations.get("fp8", False)
+            # fp8_optimizations 는 comfy.ops.pick_operations 에서 fp8_ops 선택의 게이트.
+            # weight_dtype 이 실제 fp8 가 아닌데 True 로 넘기면 bf16/fp16 weight 에도
+            # fp8_ops 가 선택되어 매 Linear 마다 on-the-fly fp8 dispatch 가 붙고
+            # 10배 이상 느려진다 (bf16 smoke 에서 sage-off 222s/step 의 근본 원인).
+            # config.py 의 optimizations["fp8"] = True 는 유지하되, weight_dtype 이
+            # 실제 fp8 계열일 때만 fp8_ops 경로로 내려보낸다.
+            _weight_dtype = original_unet_config.get("dtype", None)
+            _fp8_types = (torch.float8_e4m3fn, torch.float8_e5m2)
+            _is_fp8_weight = _weight_dtype in _fp8_types if _weight_dtype is not None else False
+            fp8 = model_config.optimizations.get("fp8", False) and _is_fp8_weight
             operations = comfy.ops.pick_operations(
-                original_unet_config.get("dtype", None),
+                _weight_dtype,
                 self.manual_cast_dtype,
                 fp8_optimizations=fp8,
                 model_config=model_config,
+            )
+            print(
+                f"[MotifVideo DEBUG ops] class={operations.__name__} "
+                f"weight_dtype={_weight_dtype} compute_dtype={self.manual_cast_dtype} "
+                f"is_fp8_weight={_is_fp8_weight} fp8_opt_forwarded={fp8}",
+                flush=True,
             )
         else:
             operations = model_config.custom_operations
@@ -142,48 +155,6 @@ class MotifVideoModel(comfy.model_base.BaseModel):
 
         self.diffusion_model = transformer
         self.diffusion_model.eval()
-
-        # NOTE: channels_last_3d / torch.compile은 __init__ 시점이 아니라
-        # load_model_weights() 이후에 적용해야 한다. apply_compile 이 만드는
-        # OptimizedModule 은 state_dict key prefix 가 "_orig_mod." 로 바뀌어
-        # ComfyUI 가 전달하는 `transformer_blocks.X` 형태 키와 전부 mismatch
-        # 되어 load_state_dict 가 unet missing 으로 처리한다. 결과적으로
-        # 파라미터가 로드되지 않고 random-init transformer 로 샘플링 →
-        # 출력이 노이즈. 아래 load_model_weights 오버라이드에서 처리한다.
-
-    # ------------------------------------------------------------------
-    # load_model_weights: apply channels_last_3d + torch.compile
-    # AFTER checkpoint state_dict has been loaded
-    # ------------------------------------------------------------------
-
-    def load_model_weights(self, sd, unet_prefix="", assign=False):
-        # 1) 원본 BaseModel 로직으로 state_dict 로드
-        super().load_model_weights(sd, unet_prefix=unet_prefix, assign=assign)
-
-        # 2) weight 로드 완료 후 메모리 레이아웃 + compile 적용 (1회만)
-        try:
-            import torch._dynamo.eval_frame as _dynamo_eval
-            _OptimizedModule = _dynamo_eval.OptimizedModule
-        except Exception:
-            _OptimizedModule = tuple()  # isinstance check no-op
-
-        if isinstance(self.diffusion_model, _OptimizedModule):
-            # 이미 wrap 된 상태면 skip (재호출 방지 + revert 후 stale 경로 방어)
-            return self
-
-        # compile / channels_last_3d 호출은 직전 플랜(20260419-perf-sampling) 에서 revert.
-        # - apply_compile: OptimizedModule wrapping 이 ComfyUI ModelPatcher offload 와 구조
-        #   충돌 (VRAM 폭증). 04_log '2026-04-20 P3.1 최종 revert' 참조.
-        # - apply_channels_last_3d: sage/compile 과 coupled 도입 전제라 단독은 이득 불투명.
-        #   sage 활성화 후 별도 gate 로 재도입 검토 (현재 gate: MOTIFVIDEO_ENABLE_CHANNELS_LAST=1,
-        #   아직 도입 안 됨).
-        #
-        # 속도 회복 경로는 SageAttention 이식 (이슈 #16). attention processor 교체만 수행
-        # 하므로 OptimizedModule wrapping 없음 → ModelPatcher offload 와 호환.
-        # sageattention 미설치 환경에선 helper 가 자동 no-op.
-        from .compile_config import apply_sage_attention
-        self.diffusion_model = apply_sage_attention(self.diffusion_model)
-        return self
 
     # ------------------------------------------------------------------
     # concat_cond: build the 17-channel prepend condition
@@ -241,26 +212,21 @@ class MotifVideoModel(comfy.model_base.BaseModel):
         """Extend the base extra_conds with MotifVideo-specific conditioning.
 
         Keys added to the cond dict:
-          c_crossattn            — text encoder hidden states [B, E, D]
-          encoder_attention_mask — text token boolean mask [B, E]
+          c_crossattn            — text encoder hidden states [B, E, D] (padding trimmed in
+                                   MotifVideoT5Gemma2Model.encode — no mask needed downstream)
           pooled_projections     — pooled text embedding [B, D_pool] (optional)
           image_embeds           — vision encoder output [B, N, D] (I2V, optional)
+
+        attention_mask 는 의도적으로 cond dict 에 넣지 않는다. text_encoder 가 padded
+        뒷부분을 미리 잘라 valid text token 만 넘기므로 transformer 가 mask 없이
+        올바르게 cross-attention 수행. mask=None 경로로 PyTorch SDPA 가 cuDNN/Flash
+        백엔드를 자동 선택해 최고 속도. (Confluence H200 벤치 19.5s/step 경로)
         """
         out = super().extra_conds(**kwargs)
 
         cross_attn = kwargs.get("cross_attn", None)
         if cross_attn is not None:
             out["c_crossattn"] = comfy.conds.CONDRegular(cross_attn)
-
-        attention_mask = kwargs.get("attention_mask", None)
-        if attention_mask is not None:
-            out["encoder_attention_mask"] = comfy.conds.CONDRegular(attention_mask)
-        elif cross_attn is not None:
-            # Auto-generate all-ones mask if text encoder didn't provide one.
-            # Shape: [B, seq_len] matching cross_attn [B, seq_len, hidden_dim].
-            out["encoder_attention_mask"] = comfy.conds.CONDRegular(
-                torch.ones(cross_attn.shape[:2], dtype=torch.bool, device=cross_attn.device)
-            )
 
         pooled_projections = kwargs.get("pooled_projections", None)
         if pooled_projections is not None:
@@ -273,5 +239,4 @@ class MotifVideoModel(comfy.model_base.BaseModel):
         return out
 
 
-__all__ = ["MotifVideoModel", "MotifVideoModelAdapter", "MotifVideoLatent",
-           "_make_comfyui_forward"]
+__all__ = ["MotifVideoModel", "MotifVideoLatent", "_make_comfyui_forward"]

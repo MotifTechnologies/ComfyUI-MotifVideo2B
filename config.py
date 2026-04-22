@@ -38,6 +38,15 @@ class MotifVideo19B(supported_models_base.BASE):
     }
 
     latent_format = MotifVideoLatent
+    # ComfyUI BaseModel.memory_required = area * dtype_size * 0.01 * factor * MB.
+    # area = B * T * H * W = 1 * 121 * 92 * 160 = 1,781,120 for 720p/121f.
+    # factor=4.0 → 예상 activation ≈ 139 GB (H200 143GB 의 97%) → ComfyUI 가 OOM 위험
+    # 판단 → Staged 강제 → 역효과. HunyuanVideo/CosmosT2V 등의 factor 값은 그 모델들의
+    # 훨씬 작은 T (33 frame 등) 에 맞춰진 것이라 frame 수 3.7배 차이를 고려 안 하면 과추정.
+    # 실측 기반 재산정: `--highvram` 으로 full load 시 activation peak ≈ 18 GB →
+    # factor = 18 GB * 1024 / (area * 2 * 0.01 * MB) ≈ 0.52. 원래 1.0 이 실측에 더 가까움.
+    # (이 값과 무관하게 NORMAL_VRAM + DynamicVRAM 은 모델을 Staged 로 두는 경향이 있어
+    # --highvram 없이 해결은 별도 접근 필요 — 추후 과제.)
     memory_usage_factor = 1.0
 
     supported_inference_dtypes = [torch.bfloat16, torch.float16, torch.float32]

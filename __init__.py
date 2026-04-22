@@ -3,9 +3,18 @@
 try:
     import comfy.supported_models
     from .config import MotifVideo19B
+    _before = len(comfy.supported_models.models)
     comfy.supported_models.models.append(MotifVideo19B)
+    _after = len(comfy.supported_models.models)
+    print(
+        f"[ComfyUI-MotifVideo1.9B] MotifVideo19B registered "
+        f"(supported_models.models: {_before} -> {_after}, "
+        f"last={comfy.supported_models.models[-1].__name__})"
+    )
 except Exception as e:
+    import traceback
     print(f"[ComfyUI-MotifVideo1.9B] WARNING: Failed to register model config: {e}")
+    traceback.print_exc()
 
 # Monkey-patch comfy.model_detection.detect_unet_config to support MotifVideo transformers.
 # detect_unet_config() is called by comfy.sd.load_diffusion_model() via Load Diffusion Model node.

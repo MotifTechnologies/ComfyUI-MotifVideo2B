@@ -1,13 +1,5 @@
+# MotifVideo 1.9B ComfyUI custom node — runtime dependencies
 diffusers>=0.35.2
-transformers>=5.0.0
-accelerate
+transformers>=5.5.4
 einops
-loguru
-peft
-sentencepiece
-
-# NOTE: sageattention 은 source build (nvcc + TORCH_CUDA_ARCH_LIST) 가 필요하여
-# requirements.txt 에 포함하지 않는다. 대신 install.py 가 CUDA 탐지 후 자동으로
-# `pip install sageattention --no-build-isolation` 를 실행한다. 5~15분 소요.
-# 빌드 실패해도 기본 attention 으로 fallback 되므로 노드는 정상 로드된다.
-# 수동 설치:  TORCH_CUDA_ARCH_LIST=<arch> pip install sageattention --no-build-isolation
+sentencepiece  # HF README 표준 동반. GemmaTokenizerFast 는 tokenizer.json 만으로 동작하지만 transformers 의 slow-tokenizer fallback / 타 tokenizer 변형 환경에서 필요 가능성.

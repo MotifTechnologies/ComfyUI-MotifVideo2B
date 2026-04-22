@@ -35,7 +35,6 @@ class MotifTextEncode:
     CATEGORY = "motifvideo"
 
     def encode(self, clip, text, negative_prompt):
-        # encode_from_tokens_scheduled returns CONDITIONING format directly
         positive = clip.encode_from_tokens_scheduled(clip.tokenize(text))
         negative = clip.encode_from_tokens_scheduled(clip.tokenize(negative_prompt))
         return (positive, negative)

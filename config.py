@@ -38,7 +38,13 @@ class MotifVideo19B(supported_models_base.BASE):
     }
 
     latent_format = MotifVideoLatent
-    memory_usage_factor = 1.0
+    # Video transformer — activation peak 이 weight 보다 훨씬 크므로 image-scale 1.0 은
+    # 과소 평가. ComfyUI 가 이 값으로 BaseModel.memory_required 를 계산해 full-load vs
+    # staged 결정. 1.0 으로 두면 NORMAL_VRAM 환경에서 "작은 모델" 로 오판하여 Staged
+    # partial load 로 빠지고, DynamicVRAM async offload 왕복이 매 step 추가돼 10배 이상
+    # 느려진다 (222s/step 관찰). 4.0 = CosmosT2V 수준, 121 frame × 720p + cross-attn 구조
+    # 기준 충분한 여유. HunyuanVideo 5.5 는 좀 더 큰 모델이라 5.5, 우리는 2B 로 더 작으므로 4.0.
+    memory_usage_factor = 4.0
 
     supported_inference_dtypes = [torch.bfloat16, torch.float16, torch.float32]
 

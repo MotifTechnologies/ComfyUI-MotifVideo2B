@@ -227,6 +227,10 @@ class MotifVideoAttention(nn.Module):
         key_input: Optional[torch.Tensor] = None,
         value_input: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+        # DEBUG: global flag — forward 함수 최상단에 1회만 선언 (Python 은 같은 함수에서
+        # global 이후 재선언 시 SyntaxError).
+        global _DEBUG_ATTN_PRINTED
+
         # Cross-attention mode: query already projected externally (cross_attn_query_proj + norm),
         # skip to_q and only apply reshape + norm_q + RoPE. K/V use to_k/to_v as normal.
         if query_input is not None:
@@ -245,7 +249,6 @@ class MotifVideoAttention(nn.Module):
             if image_rotary_emb is not None:
                 query = apply_rotary_emb(query, image_rotary_emb)
 
-            global _DEBUG_ATTN_PRINTED
             if not _DEBUG_ATTN_PRINTED:
                 _DEBUG_ATTN_PRINTED = True
                 _m = attention_mask
@@ -321,7 +324,6 @@ class MotifVideoAttention(nn.Module):
             value = torch.cat([value, encoder_value], dim=2)
 
         # 5. Attention (ComfyUI optimized_attention — Flash/cuDNN/XFORMERS 자동 선택)
-        global _DEBUG_ATTN_PRINTED
         if not _DEBUG_ATTN_PRINTED:
             _DEBUG_ATTN_PRINTED = True
             _m = attention_mask

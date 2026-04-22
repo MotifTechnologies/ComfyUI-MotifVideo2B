@@ -94,12 +94,27 @@ class MotifVideoModel(comfy.model_base.BaseModel):
         # custom_operations override takes precedence; otherwise pick_operations chooses
         # manual_cast / fp8_ops / disable_weight_init depending on model_config and dtype.
         if model_config.custom_operations is None:
-            fp8 = model_config.optimizations.get("fp8", False)
+            # fp8_optimizations 는 comfy.ops.pick_operations 에서 fp8_ops 선택의 게이트.
+            # weight_dtype 이 실제 fp8 가 아닌데 True 로 넘기면 bf16/fp16 weight 에도
+            # fp8_ops 가 선택되어 매 Linear 마다 on-the-fly fp8 dispatch 가 붙고
+            # 10배 이상 느려진다 (bf16 smoke 에서 sage-off 222s/step 의 근본 원인).
+            # config.py 의 optimizations["fp8"] = True 는 유지하되, weight_dtype 이
+            # 실제 fp8 계열일 때만 fp8_ops 경로로 내려보낸다.
+            _weight_dtype = original_unet_config.get("dtype", None)
+            _fp8_types = (torch.float8_e4m3fn, torch.float8_e5m2)
+            _is_fp8_weight = _weight_dtype in _fp8_types if _weight_dtype is not None else False
+            fp8 = model_config.optimizations.get("fp8", False) and _is_fp8_weight
             operations = comfy.ops.pick_operations(
-                original_unet_config.get("dtype", None),
+                _weight_dtype,
                 self.manual_cast_dtype,
                 fp8_optimizations=fp8,
                 model_config=model_config,
+            )
+            print(
+                f"[MotifVideo DEBUG ops] class={operations.__name__} "
+                f"weight_dtype={_weight_dtype} compute_dtype={self.manual_cast_dtype} "
+                f"is_fp8_weight={_is_fp8_weight} fp8_opt_forwarded={fp8}",
+                flush=True,
             )
         else:
             operations = model_config.custom_operations

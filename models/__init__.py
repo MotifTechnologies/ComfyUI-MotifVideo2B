@@ -16,17 +16,12 @@ spurious 'transformer.' prefix. The ComfyUI calling convention is handled
 by monkey-patching the transformer's forward method.
 """
 
-import os
-
 import torch
 import comfy.model_base
 import comfy.conds
 import comfy.ops
-import comfy.model_management
 
 from .transformer import MotifVideoTransformer3DModel
-
-from .adapter import MotifVideoModelAdapter
 from .latent_format import MotifVideoLatent
 
 
@@ -146,122 +141,6 @@ class MotifVideoModel(comfy.model_base.BaseModel):
         self.diffusion_model = transformer
         self.diffusion_model.eval()
 
-        # NOTE: channels_last_3d / torch.compile은 __init__ 시점이 아니라
-        # load_model_weights() 이후에 적용해야 한다. apply_compile 이 만드는
-        # OptimizedModule 은 state_dict key prefix 가 "_orig_mod." 로 바뀌어
-        # ComfyUI 가 전달하는 `transformer_blocks.X` 형태 키와 전부 mismatch
-        # 되어 load_state_dict 가 unet missing 으로 처리한다. 결과적으로
-        # 파라미터가 로드되지 않고 random-init transformer 로 샘플링 →
-        # 출력이 노이즈. 아래 load_model_weights 오버라이드에서 처리한다.
-
-    # ------------------------------------------------------------------
-    # apply_model: sequential offload (HF model_cpu_offload_seq equivalent)
-    # ------------------------------------------------------------------
-
-    def apply_model(self, x, t, c_concat=None, c_crossattn=None, control=None,
-                    transformer_options={}, **kwargs):
-        """Override to perform targeted unload of T5Gemma2 text encoder before denoising.
-
-        HF pipeline 의 model_cpu_offload_seq="text_encoder->transformer->vae" 와
-        동등 의미론으로, 우리 T5Gemma2 text encoder 만 targeted unload.
-        control / LoRA / hooks / patches 등은 절대 건드리지 않음 (Codex HIGH 리뷰 결과 반영).
-
-        HIGH_VRAM 환경(H200)에서 ComfyUI 의 smart memory 가 skip 하는 경우에 대비해
-        직접 unload. sequential_offload / unload_all_models 방식을 사용하지 않으므로
-        denoise time 에 참여하는 control, LoRA, hooks, patches, TREAD, TeaCache 등
-        보조 모델은 GPU 상태가 유지된다.
-
-        상태 기반 idempotent 구현: current_loaded_models 에서 MotifVideoT5Gemma2Model
-        인스턴스를 찾아 있으면 unload, 없으면 skip (이미 unload 된 상태면 no-op 자동).
-        """
-        # local import: circular import 방지
-        # (text_encoders 는 models 를 import 하지 않으므로 실제 순환은 없으나
-        #  top-level import 를 피해 의존 방향을 명시적으로 단방향으로 유지)
-        # P2.fix: absolute → relative. ComfyUI 는 custom_node 를 `ComfyUI-MotifVideo1.9B`
-        # 로 로드하는데 dash 포함 식별자는 absolute import 불가 — 반드시 relative.
-        from ..text_encoders.t5_gemma2 import MotifVideoT5Gemma2Model
-
-        device = comfy.model_management.get_torch_device()
-
-        # current_loaded_models 순회하여 T5Gemma2 text encoder LoadedModel 식별.
-        # LoadedModel.model 은 ModelPatcher, .model.model 이 nn.Module(BaseModel 또는
-        # 직접 nn.Module 서브클래스). 두 경로 모두 체크.
-        text_encoder_lms = []
-        for lm in comfy.model_management.current_loaded_models:
-            if lm.model is None:
-                continue
-            # ModelPatcher 경로: lm.model.model → nn.Module
-            mp_model = getattr(lm.model, "model", None)
-            if isinstance(mp_model, MotifVideoT5Gemma2Model):
-                text_encoder_lms.append(lm)
-                continue
-            # 직접 nn.Module 경로: lm.model 자체가 MotifVideoT5Gemma2Model
-            if isinstance(lm.model, MotifVideoT5Gemma2Model):
-                text_encoder_lms.append(lm)
-
-        if text_encoder_lms:
-            # T5Gemma2 text encoder 만 targeted unload.
-            # keep_loaded = "T5Gemma2 이외의 모든 LoadedModel" 흑리스트 방식.
-            # control, LoRA, hooks, patches, 기타 모든 보조 모델은 keep 에 포함.
-            non_text_encoder_lms = [
-                lm for lm in comfy.model_management.current_loaded_models
-                if lm not in text_encoder_lms
-            ]
-            comfy.model_management.free_memory(1e30, device, keep_loaded=non_text_encoder_lms)
-
-        return super().apply_model(x, t, c_concat, c_crossattn, control,
-                                   transformer_options, **kwargs)
-
-    # ------------------------------------------------------------------
-    # memory_required: add activation peak margin for smart memory hint
-    # ------------------------------------------------------------------
-
-    def memory_required(self, input_shape, cond_shapes={}):
-        """Return memory estimate with activation peak margin.
-
-        HF sequential_offload 정렬 보조: normal_vram 환경에서 ComfyUI smart
-        memory 가 올바른 unload 결정을 내리도록 activation peak 여유를 1.3배
-        margin 으로 반영. HIGH_VRAM 환경에서는 apply_model 의 명시적 free_memory
-        호출이 주 역할이므로 본 메서드는 보조 역할만 함.
-        """
-        base = super().memory_required(input_shape, cond_shapes)
-        return base * 1.3
-
-    # ------------------------------------------------------------------
-    # load_model_weights: apply channels_last_3d + torch.compile
-    # AFTER checkpoint state_dict has been loaded
-    # ------------------------------------------------------------------
-
-    def load_model_weights(self, sd, unet_prefix="", assign=False):
-        # 1) 원본 BaseModel 로직으로 state_dict 로드
-        super().load_model_weights(sd, unet_prefix=unet_prefix, assign=assign)
-
-        # 2) weight 로드 완료 후 메모리 레이아웃 + compile 적용 (1회만)
-        try:
-            import torch._dynamo.eval_frame as _dynamo_eval
-            _OptimizedModule = _dynamo_eval.OptimizedModule
-        except Exception:
-            _OptimizedModule = tuple()  # isinstance check no-op
-
-        if isinstance(self.diffusion_model, _OptimizedModule):
-            # 이미 wrap 된 상태면 skip (재호출 방지 + revert 후 stale 경로 방어)
-            return self
-
-        # compile / channels_last_3d 호출은 직전 플랜(20260419-perf-sampling) 에서 revert.
-        # - apply_compile: OptimizedModule wrapping 이 ComfyUI ModelPatcher offload 와 구조
-        #   충돌 (VRAM 폭증). 04_log '2026-04-20 P3.1 최종 revert' 참조.
-        # - apply_channels_last_3d: sage/compile 과 coupled 도입 전제라 단독은 이득 불투명.
-        #   sage 활성화 후 별도 gate 로 재도입 검토 (현재 gate: MOTIFVIDEO_ENABLE_CHANNELS_LAST=1,
-        #   아직 도입 안 됨).
-        #
-        # 속도 회복 경로는 SageAttention 이식 (이슈 #16). attention processor 교체만 수행
-        # 하므로 OptimizedModule wrapping 없음 → ModelPatcher offload 와 호환.
-        # sageattention 미설치 환경에선 helper 가 자동 no-op.
-        if os.environ.get("MOTIFVIDEO_ENABLE_SAGE") == "1":
-            from .compile_config import apply_sage_attention
-            self.diffusion_model = apply_sage_attention(self.diffusion_model)
-        return self
-
     # ------------------------------------------------------------------
     # concat_cond: build the 17-channel prepend condition
     # ------------------------------------------------------------------
@@ -332,19 +211,6 @@ class MotifVideoModel(comfy.model_base.BaseModel):
         attention_mask = kwargs.get("attention_mask", None)
         if attention_mask is not None:
             out["encoder_attention_mask"] = comfy.conds.CONDRegular(attention_mask)
-        elif cross_attn is not None:
-            # Fallback: auto-generate all-ones mask when the text encoder did not
-            # supply a padding mask.  This path is intentionally kept for backward
-            # compatibility with the standard CLIPTextEncode node, but it is a
-            # quality-divergence path: padded tokens participate in cross-attention,
-            # causing a training/inference distribution mismatch.  When
-            # MotifTextEncode is used, attention_mask is populated via
-            # MotifVideoT5Gemma2Model.encode_token_weights() and this branch is
-            # never reached.
-            # Shape: [B, seq_len] matching cross_attn [B, seq_len, hidden_dim].
-            out["encoder_attention_mask"] = comfy.conds.CONDRegular(
-                torch.ones(cross_attn.shape[:2], dtype=torch.bool, device=cross_attn.device)
-            )
 
         pooled_projections = kwargs.get("pooled_projections", None)
         if pooled_projections is not None:
@@ -357,5 +223,4 @@ class MotifVideoModel(comfy.model_base.BaseModel):
         return out
 
 
-__all__ = ["MotifVideoModel", "MotifVideoModelAdapter", "MotifVideoLatent",
-           "_make_comfyui_forward"]
+__all__ = ["MotifVideoModel", "MotifVideoLatent", "_make_comfyui_forward"]

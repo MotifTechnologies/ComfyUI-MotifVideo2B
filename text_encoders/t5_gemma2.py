@@ -189,7 +189,7 @@ class MotifVideoT5Gemma2Model(nn.Module, ClipTokenWeightEncoder):
         else:
             device = next(self.encoder.parameters()).device
 
-        # Build padded tensor and attention mask.
+        # Build padded tensor and attention mask for the encoder forward pass.
         max_len = max(len(t) for t in tokens)
         pad_id = self.special_tokens["pad"]
         input_ids = torch.tensor(
@@ -207,10 +207,7 @@ class MotifVideoT5Gemma2Model(nn.Module, ClipTokenWeightEncoder):
             )
 
         hidden_state = outputs.last_hidden_state.float()
-        # Return attention_mask as third element so encode_token_weights can propagate it
-        # to the CONDITIONING pooled_dict via the ComfyUI extra-dict convention.
-        # Shape: [batch, seq_len] — long (0 = pad, 1 = real token).
-        return hidden_state, None, attention_mask
+        return hidden_state, None
 
     def encode_token_weights(self, token_weight_pairs):
         """ComfyUI CLIP interface.  Dispatches through ClipTokenWeightEncoder.
@@ -236,11 +233,7 @@ class MotifVideoT5Gemma2Model(nn.Module, ClipTokenWeightEncoder):
             pad_id = self.special_tokens["pad"]
             to_encode.append([pad_id] * max_token_len)
 
-        encode_out = self.encode(to_encode)
-        out, pooled = encode_out[0], encode_out[1]
-        # encode() returns (hidden_state, None, attention_mask) — mask may be absent
-        # if called from a code path that still expects the old 2-tuple signature.
-        raw_mask = encode_out[2] if len(encode_out) > 2 else None
+        out, pooled = self.encode(to_encode)
 
         # pooled is None for T5-style encoders
         first_pooled = pooled
@@ -266,23 +259,6 @@ class MotifVideoT5Gemma2Model(nn.Module, ClipTokenWeightEncoder):
                 torch.cat(output, dim=-2).to(device=intermed_device),
                 first_pooled,
             )
-
-        # Propagate padding mask as extra dict so ComfyUI's convert_cond() places it
-        # into pooled_dict["attention_mask"], which extra_conds() then picks up via
-        # kwargs.get("attention_mask").  This closes the R2 gap identified in P0.4:
-        # without this, extra_conds() falls back to an all-ones mask that includes
-        # padded tokens in cross-attention (training/inference distribution mismatch).
-        if raw_mask is not None:
-            # Blank-prompt (sections == 0) path: encode() returned the sentinel row
-            # out[-1:], so the mask must also be the sentinel row to match [1, seq_len].
-            # Normal path (sections > 0): slice to sections rows and flatten along
-            # sequence dim to match the catted hidden states: [1, sections * seq_len].
-            if sections == 0:
-                mask_sections = raw_mask[-1:]  # match sentinel row out[-1:]
-            else:
-                mask_sections = raw_mask[:sections]  # [sections, seq_len]
-            flat_mask = mask_sections.flatten().unsqueeze(0).to(device=intermed_device)
-            r = r + ({"attention_mask": flat_mask},)
 
         return r
 

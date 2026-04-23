@@ -792,6 +792,7 @@ class MotifVideoTransformer3DModel(ModelMixin, ConfigMixin, PeftAdapterMixin, Fr
         dtype=None,
         device=None,
         operations=None,
+        **kwargs,  # absorb unknown keys forwarded by BaseModel (e.g. image_model, disable_unet_model_creation)
     ) -> None:
         super().__init__()
 

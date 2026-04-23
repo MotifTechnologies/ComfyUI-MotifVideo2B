@@ -90,9 +90,13 @@ def get_gguf_metadata(reader):
 # ---------------------------------------------------------------------------
 
 def _get_ggml_tensor_cls():
-    """Return GGMLTensor class from ComfyUI-GGUF/dequant.py (lazy)."""
-    dequant_mod = _load_comfyui_gguf_module("dequant.py")
-    return dequant_mod.GGMLTensor
+    """Return GGMLTensor class from ComfyUI-GGUF/ops.py (lazy).
+
+    Note: Upstream defines GGMLTensor in ops.py, not dequant.py. Cross-checked
+    against ComfyUI-GGUF/loader.py which imports `from .ops import GGMLTensor`.
+    """
+    ops_mod = _load_comfyui_gguf_module("ops.py")
+    return ops_mod.GGMLTensor
 
 
 def _get_is_quantized():
@@ -345,4 +349,81 @@ class MotifVideoUnetLoaderGGUF:
             raise RuntimeError("ERROR: Could not detect model type of: {}".format(unet_path))
         model = GGUFModelPatcher.clone(model)
         model.patch_on_device = patch_on_device
+
+        # P2.2 diagnostic (env-gated). Set MOTIFVIDEO_GGUF_DIAG=1 to investigate
+        # whether weights actually reach GPU after ModelPatcher load, or stay on
+        # CPU and get copied per-forward (staged-like behavior).
+        if os.environ.get("MOTIFVIDEO_GGUF_DIAG"):
+            _install_motifvideo_gguf_diagnostic(model)
+
         return (model,)
+
+
+def _install_motifvideo_gguf_diagnostic(model):
+    """P2.2 diagnostic: (a) load-time device snapshot, (b) one-shot forward hook."""
+    try:
+        diffusion_model = model.model.diffusion_model
+    except AttributeError:
+        logging.warning("[MotifVideo GGUF DIAG] cannot locate diffusion_model for diag")
+        return
+
+    # (a) Snapshot: first 3 Linear-like modules with a weight attribute.
+    snap_count = 0
+    for name, mod in diffusion_model.named_modules():
+        w = getattr(mod, "weight", None)
+        if w is None:
+            continue
+        w_cls = type(w.data if hasattr(w, "data") else w).__name__
+        print(
+            f"[MotifVideo GGUF DIAG LOAD] {name}: "
+            f"weight device={w.device} dtype={w.dtype} class={w_cls}",
+            flush=True,
+        )
+        snap_count += 1
+        if snap_count >= 3:
+            break
+
+    # (b) One-shot forward pre-hook on the first Linear-like module. Fires once
+    # at the first sampling step, walks the whole transformer, counts cuda vs
+    # cpu weight-bearing params, then removes itself.
+    target_name, target_mod = None, None
+    for name, mod in diffusion_model.named_modules():
+        if getattr(mod, "weight", None) is not None and hasattr(mod, "forward"):
+            target_name, target_mod = name, mod
+            break
+    if target_mod is None:
+        print("[MotifVideo GGUF DIAG] no Linear-like module found for forward hook", flush=True)
+        return
+
+    hook_handle = {"h": None}
+    fired = {"v": False}
+
+    def _hook(m, inputs):
+        if fired["v"]:
+            return
+        fired["v"] = True
+        cuda_count = cpu_count = 0
+        for _, sub in diffusion_model.named_modules():
+            w = getattr(sub, "weight", None)
+            if w is None:
+                continue
+            if w.device.type == "cuda":
+                cuda_count += 1
+            else:
+                cpu_count += 1
+        input_dev = inputs[0].device if inputs and hasattr(inputs[0], "device") else None
+        hook_weight_dev = m.weight.device if m.weight is not None else None
+        print(
+            f"[MotifVideo GGUF DIAG FORWARD] target={target_name} "
+            f"hook_weight_device={hook_weight_dev} input_device={input_dev} "
+            f"counts cuda={cuda_count} cpu={cpu_count}",
+            flush=True,
+        )
+        if hook_handle["h"] is not None:
+            hook_handle["h"].remove()
+
+    hook_handle["h"] = target_mod.register_forward_pre_hook(_hook)
+    print(
+        f"[MotifVideo GGUF DIAG] installed one-shot forward pre-hook on {target_name}",
+        flush=True,
+    )

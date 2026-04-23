@@ -516,8 +516,13 @@ class MotifVideoSingleTransformerBlock(nn.Module):
             self.cross_attn_query_proj = ops.Linear(hidden_size, hidden_size, dtype=dtype, device=device)
             self.cross_attn_query_norm = ops.LayerNorm(hidden_size, eps=1e-6, dtype=dtype, device=device)
             self.cross_attn_out_proj = ops.Linear(hidden_size, hidden_size, dtype=dtype, device=device)
-            nn.init.zeros_(self.cross_attn_out_proj.weight)
-            nn.init.zeros_(self.cross_attn_out_proj.bias)
+            # GGMLOps.Linear (and Windows disable_weight_init) leave weight/bias as None
+            # so the state_dict loader can swap in GGMLTensor. Skip the zero-init in that
+            # case — state_dict load always overwrites these values anyway.
+            if self.cross_attn_out_proj.weight is not None:
+                nn.init.zeros_(self.cross_attn_out_proj.weight)
+            if self.cross_attn_out_proj.bias is not None:
+                nn.init.zeros_(self.cross_attn_out_proj.bias)
 
         self.norm = AdaLayerNormZeroSingle(hidden_size, norm_type=norm_type, dtype=dtype, device=device, operations=ops)
         self.proj_mlp = ops.Linear(hidden_size, mlp_dim, dtype=dtype, device=device)
@@ -631,8 +636,13 @@ class MotifVideoTransformerBlock(nn.Module):
             self.cross_attn_query_proj = ops.Linear(hidden_size, hidden_size, dtype=dtype, device=device)
             self.cross_attn_query_norm = ops.LayerNorm(hidden_size, eps=1e-6, dtype=dtype, device=device)
             self.cross_attn_out_proj = ops.Linear(hidden_size, hidden_size, dtype=dtype, device=device)
-            nn.init.zeros_(self.cross_attn_out_proj.weight)
-            nn.init.zeros_(self.cross_attn_out_proj.bias)
+            # GGMLOps.Linear (and Windows disable_weight_init) leave weight/bias as None
+            # so the state_dict loader can swap in GGMLTensor. Skip the zero-init in that
+            # case — state_dict load always overwrites these values anyway.
+            if self.cross_attn_out_proj.weight is not None:
+                nn.init.zeros_(self.cross_attn_out_proj.weight)
+            if self.cross_attn_out_proj.bias is not None:
+                nn.init.zeros_(self.cross_attn_out_proj.bias)
 
         self.norm2 = ops.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6, dtype=dtype, device=device)
         self.norm2_context = ops.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6, dtype=dtype, device=device)

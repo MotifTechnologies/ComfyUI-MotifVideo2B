@@ -142,4 +142,18 @@ except Exception as e:
     NODE_CLASS_MAPPINGS = {}
     NODE_DISPLAY_NAME_MAPPINGS = {}
 
+# Optional: register MotifVideoUnetLoaderGGUF. The loader file has no top-level
+# ComfyUI-GGUF imports (all lazy at load_unet time), so this import itself
+# should not fail due to ComfyUI-GGUF absence. The try/except is a safety net
+# for unexpected bugs so that the rest of the node pack keeps loading.
+try:
+    from .nodes.gguf_loader import MotifVideoUnetLoaderGGUF
+    NODE_CLASS_MAPPINGS["MotifVideoUnetLoaderGGUF"] = MotifVideoUnetLoaderGGUF
+    NODE_DISPLAY_NAME_MAPPINGS["MotifVideoUnetLoaderGGUF"] = "Load MotifVideo Unet (GGUF)"
+    print("[ComfyUI-MotifVideo1.9B] MotifVideoUnetLoaderGGUF registered.")
+except Exception as e:
+    import traceback
+    print(f"[ComfyUI-MotifVideo1.9B] WARNING: Failed to register MotifVideoUnetLoaderGGUF: {e}")
+    traceback.print_exc()
+
 __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS"]

@@ -1,6 +1,42 @@
-# ComfyUI-MotifVideo1.9B
+<p align="center">
+  <img src="assets/banner.png" width="100%" alt="Motif-Video 2B teaser"/>
+</p>
 
-ComfyUI custom nodes for MotifVideo 1.9B video generation model.
+<p align="center">
+  <h1 align="center">ComfyUI-MotifVideo2B</h1>
+</p>
+
+<p align="center">
+  <b>Official ComfyUI custom nodes for the Motif-Video 2B text-to-video diffusion transformer</b>
+</p>
+
+<p align="center">
+  📑 <a href="https://arxiv.org/abs/2604.16503">Technical Report</a> &nbsp;|&nbsp;
+  🤗 <a href="https://huggingface.co/Motif-Technologies/Motif-Video-2B">Hugging Face</a> &nbsp;|&nbsp;
+  🌐 <a href="https://motiftech.io/videoshowcase">Project Page</a>
+</p>
+
+---
+
+## 🔥 News
+
+- **[2026-04-23]** `MotifVideoUnetLoaderGGUF` node added for experimental GGUF loading (MM-1134). GGUF is **not recommended** for production — see the GGUF advisory in the Performance section.
+- **[2026-04-23]** `fp8_e4m3fn` workflow restored. `fp8_e4m3fn + --highvram` is now the recommended production path (~28 GB VRAM, ~31 s/step on H200) (#25).
+- **[2026-04-04]** Default transformer checkpoint switched to the `720p-6_400` cross-attention fine-tune. The variant is auto-detected from `state_dict` keys, so existing workflows continue to work.
+
+> **Note on naming.** Motif-Video 2B is the public release name of the model. The internal filename `motifvideo_1.9b.safetensors` (and checkpoint strings such as `motif-video-1.9b-720p-6_400`) predates the 2B branding and is preserved as a user-facing technical identifier — it refers to the same Motif-Video 2B model.
+
+---
+
+## 📖 Introduction
+
+`ComfyUI-MotifVideo2B` exposes Motif Technologies' Motif-Video 2B text-to-video and image-to-video diffusion transformer as a set of ComfyUI custom nodes, so the model plugs directly into the standard `Load Diffusion Model → KSampler → VAE Decode` graph.
+
+Motif-Video 2B is a flow-matching diffusion transformer organized around a three-stage DDT-style backbone (dual-stream + single-stream + DDT decoder) with **Shared Cross-Attention** for long-context text alignment. The architectural derivation and full training recipe are in the [Motif-Video 2B technical report](https://arxiv.org/abs/2604.16503); this repository ships the inference-time ComfyUI integration.
+
+These nodes are first-class citizens of ComfyUI's memory manager: FP8 weight conversion, CPU offload, and attention-backend auto-selection (Flash / cuDNN / xFormers) are all delegated to the engine rather than reimplemented. What this repository adds on top is MotifVideo-specific glue: the T5Gemma2 text encoder, the Wan-family 3D VAE in diffusers layout, a TeaCache accelerator, and an Image-to-Video conditioning node.
+
+---
 
 ## Features
 

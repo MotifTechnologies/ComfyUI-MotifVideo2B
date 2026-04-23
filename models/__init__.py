@@ -77,84 +77,58 @@ class MotifVideoModel(comfy.model_base.BaseModel):
         model_type=comfy.model_base.ModelType.FLOW,
         device=None,
     ):
-        # Disable ComfyUI's default UNetModel instantiation — we create the
-        # transformer ourselves below.
-        unet_config_override = dict(model_config.unet_config)
-        unet_config_override["disable_unet_model_creation"] = True
+        unet_config = model_config.unet_config
 
-        # Temporarily patch the config so BaseModel.__init__ does not try to
-        # instantiate a UNetModel with our custom unet_config.
-        original_unet_config = model_config.unet_config
-        model_config.unet_config = unet_config_override
-        super().__init__(model_config, model_type, device=device)
-        model_config.unet_config = original_unet_config  # restore
-
-        # Select operations class based on weight/compute dtype.
-        # Mirrors comfy.model_base.BaseModel.__init__ pattern (model_base.py:143-147).
-        # custom_operations override takes precedence; otherwise pick_operations chooses
-        # manual_cast / fp8_ops / disable_weight_init depending on model_config and dtype.
+        # fp8 안전장치: BaseModel.__init__ 표준 pick_operations 호출 전에 적용.
+        # config.py 의 optimizations["fp8"] = True 는 weight_dtype 이 실제 fp8 계열일
+        # 때만 fp8_ops 경로로 내려보낸다. bf16/fp16 weight 에 fp8_ops 가 선택되면
+        # 매 Linear 마다 on-the-fly fp8 dispatch 가 붙어 10배 이상 느려진다
+        # (bf16 smoke 에서 sage-off 222s/step 의 근본 원인).
+        # model_config.optimizations 는 인스턴스 생성 시 .copy() 된 mutable dict.
         if model_config.custom_operations is None:
-            # fp8_optimizations 는 comfy.ops.pick_operations 에서 fp8_ops 선택의 게이트.
-            # weight_dtype 이 실제 fp8 가 아닌데 True 로 넘기면 bf16/fp16 weight 에도
-            # fp8_ops 가 선택되어 매 Linear 마다 on-the-fly fp8 dispatch 가 붙고
-            # 10배 이상 느려진다 (bf16 smoke 에서 sage-off 222s/step 의 근본 원인).
-            # config.py 의 optimizations["fp8"] = True 는 유지하되, weight_dtype 이
-            # 실제 fp8 계열일 때만 fp8_ops 경로로 내려보낸다.
-            _weight_dtype = original_unet_config.get("dtype", None)
+            _weight_dtype = unet_config.get("dtype", None)
             _fp8_types = (torch.float8_e4m3fn, torch.float8_e5m2)
             _is_fp8_weight = _weight_dtype in _fp8_types if _weight_dtype is not None else False
-            fp8 = model_config.optimizations.get("fp8", False) and _is_fp8_weight
-            operations = comfy.ops.pick_operations(
-                _weight_dtype,
-                self.manual_cast_dtype,
-                fp8_optimizations=fp8,
-                model_config=model_config,
-            )
-            print(
-                f"[MotifVideo DEBUG ops] class={operations.__name__} "
-                f"weight_dtype={_weight_dtype} compute_dtype={self.manual_cast_dtype} "
-                f"is_fp8_weight={_is_fp8_weight} fp8_opt_forwarded={fp8}",
-                flush=True,
-            )
-        else:
-            operations = model_config.custom_operations
+            if not _is_fp8_weight:
+                # weight 가 fp8 아닌 경우 fp8 최적화 비활성 — BaseModel 이 pick_operations
+                # 호출 시 이 값을 읽어 fp8_ops 대신 disable_weight_init 선택.
+                model_config.optimizations["fp8"] = False
 
-        # Filter unet_config to only valid MotifVideoTransformer3DModel params.
-        _TRANSFORMER_PARAMS = {
-            "in_channels", "out_channels", "num_attention_heads", "attention_head_dim",
-            "num_layers", "num_single_layers", "num_decoder_layers", "mlp_ratio",
-            "patch_size", "patch_size_t", "qk_norm", "norm_type",
-            "text_embed_dim", "image_embed_dim", "pooled_projection_dim",
-            "rope_theta", "rope_axes_dim", "base_latent_size",
-            "enable_text_cross_attention_dual", "enable_text_cross_attention_single",
-        }
-        transformer_kwargs = {
-            k: v for k, v in original_unet_config.items()
-            if k in _TRANSFORMER_PARAMS
-        }
-        print(f"[MotifVideo] transformer_kwargs: { {k: v for k, v in transformer_kwargs.items() if k in ('rope_theta', 'num_decoder_layers', 'num_layers', 'num_single_layers', 'num_attention_heads', 'enable_text_cross_attention_dual', 'enable_text_cross_attention_single')} }")
-        # Use unet_config.dtype (weight storage dtype) rather than self.get_dtype()
-        # — the latter reads self.diffusion_model.dtype which doesn't exist until
-        # transformer is constructed below. Matches comfy flux/sd3 conventions.
-        weight_dtype = original_unet_config.get("dtype", None)
-        transformer = MotifVideoTransformer3DModel(
-            **transformer_kwargs,
-            operations=operations,
-            dtype=weight_dtype,
+        # BaseModel 표준 경로: unet_model=MotifVideoTransformer3DModel 을 전달하면
+        # BaseModel.__init__ 이 pick_operations + unet_model(**unet_config) + eval() +
+        # archive_model_dtypes() 를 순서대로 호출. vbar 시스템과 정상 협력하는 표준 흐름.
+        # MotifVideoTransformer3DModel.__init__ 에 **kwargs 를 추가하여 unet_config 의
+        # 모르는 키(image_model 등)를 무시.
+        super().__init__(
+            model_config,
+            model_type,
             device=device,
+            unet_model=MotifVideoTransformer3DModel,
         )
-        # NOTE: .to(dtype=bfloat16) 강제 cast 제거 — comfy.ops 가 weight load 시점에
-        # weight_dtype 과 compute_dtype 매핑을 담당. 기존 강제 cast 는 manual_cast 회로를
-        # 우회하여 fp8/quantized weight 를 망가뜨릴 수 있음.
+
+        # DEBUG: ops class 정보 출력 (BaseModel 이 선택한 operations 는 직접 조회 불가 —
+        # pick_operations 결과는 diffusion_model 내부에 bound 됨. dtype 으로 추론).
+        _weight_dtype = unet_config.get("dtype", None)
+        _fp8_opt = model_config.optimizations.get("fp8", False)
+        print(
+            f"[MotifVideo DEBUG ops] weight_dtype={_weight_dtype} "
+            f"manual_cast_dtype={self.manual_cast_dtype} "
+            f"fp8_opt_effective={_fp8_opt} "
+            f"diffusion_model={type(self.diffusion_model).__name__}",
+            flush=True,
+        )
+        print(
+            f"[MotifVideo] unet_config keys forwarded to transformer: "
+            f"{ {k: v for k, v in unet_config.items() if k in ('rope_theta', 'num_decoder_layers', 'num_layers', 'num_single_layers', 'num_attention_heads', 'enable_text_cross_attention_dual', 'enable_text_cross_attention_single')} }",
+            flush=True,
+        )
 
         # Monkey-patch forward to translate ComfyUI calling convention.
         # The transformer is set directly as diffusion_model (not wrapped in
         # an adapter nn.Module) so state_dict keys match the checkpoint.
-        original_forward = transformer.forward
-        transformer.forward = _make_comfyui_forward(original_forward)
-
-        self.diffusion_model = transformer
-        self.diffusion_model.eval()
+        # super().__init__ 이 self.diffusion_model 을 이미 생성하고 eval() 을 완료한 뒤에 적용.
+        original_forward = self.diffusion_model.forward
+        self.diffusion_model.forward = _make_comfyui_forward(original_forward)
 
     # ------------------------------------------------------------------
     # concat_cond: build the 17-channel prepend condition

@@ -69,6 +69,28 @@ python main.py --highvram --listen 0.0.0.0 --port 8188
 
 수정 내용: `MotifVideoConditionEmbedding.forward` 의 fp8 분기에서 `timesteps_proj` 를 `torch.bfloat16` 로 cast (float32 활성화 전파 차단 + scaled_mm `out_dtype=bf16 + bias` 경로 진입).
 
+### GGUF workflow 지원 (2026-04-23, MM-1134)
+
+`general.architecture=motif_video` GGUF (diffusers 로 export) 로드를 위한 `MotifVideoUnetLoaderGGUF` 노드 추가. ComfyUI-GGUF 의 핵심 unit 을 Apache-2.0 하에 부분 차용.
+
+**필수 선행 설치**: [ComfyUI-GGUF](https://github.com/city96/ComfyUI-GGUF) 를 `custom_nodes/` 에 설치. 부재 시 `unet_gguf` 드롭다운이 비어있고 WARNING 로그 출력.
+
+**workflow 노드 교체**: 기존 ComfyUI-GGUF 의 `UnetLoaderGGUF` 는 `IMG_ARCH_LIST` whitelist 거부로 `motif_video` 로드 불가. 워크플로 JSON 의 해당 노드를 `MotifVideoUnetLoaderGGUF` (카테고리: `MotifVideo/loaders`) 로 교체 후 `unet_name` 재선택.
+
+**실측 결과** (Q4_0 + `--highvram`, H200, motif_video.json):
+
+| 설정 | VRAM peak | s/step | 비고 |
+|------|----------|--------|------|
+| **fp8_e4m3fn + `--highvram`** | ~28GB | ~31s | 권장 경로 |
+| GGUF Q4_0 + `--highvram` | **~36GB** | **~220s** | 동작은 하나 성능 열세 |
+
+**성능 열세 원인** (구조적, upstream ComfyUI-GGUF 한계):
+- `GGMLOps.Linear` 가 dequant-on-the-fly (매 forward 마다 Q4_0 → bf16 full tensor 생성). MotifVideo ~360 Linear × 50 step = 18,000 dequant 사이클.
+- forward 시점 모든 weight 는 GPU 상주 (staged 아님 — `MOTIFVIDEO_GGUF_DIAG=1` 로 검증 완료, cuda=467 cpu=0). 느림의 원인은 순수 dequant 오버헤드.
+- dequant 임시 버퍼 누적으로 VRAM 도 fp8 대비 증가.
+
+**권장 사항**: 프로덕션 샘플링은 fp8 경로 사용. GGUF 는 디스크 용량/초기 로드 VRAM 이 제약인 환경에서만 고려.
+
 ## 워크플로우
 
 ```

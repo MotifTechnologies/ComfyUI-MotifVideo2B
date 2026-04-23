@@ -137,14 +137,19 @@ class MotifVideoConditionEmbedding(nn.Module):
         pooled_projection: torch.Tensor | None = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         timesteps_proj = self.time_proj(timestep)
-        # HF 원본 (bf16 weight 전제) 은 `next(parameters()).dtype` = bf16 로 cast.
-        # ComfyUI fp8 optimization 경로에서는 weight storage 가 fp8 이라 이 값이 fp8 →
-        # fp8 input + fp8 weight matmul 은 CUDA kernel 부재 (`addmm_cuda not implemented
-        # for Float8_e4m3fn`). fp8 storage 인 경우 cast 건너뛰고 `ops.Linear` 가 내부
-        # `cast_bias_weight` 로 weight 를 input dtype 으로 cast 하게 맡김.
+        # Input dtype contract for timestep_embedder.
+        # diffusers.Timesteps always emits float32 sinusoidal embeddings, so the
+        # downstream Linear must receive a dtype matching our compute path.
+        # - bf16 weight storage: cast input to the weight dtype (= bf16).
+        # - fp8 weight storage (comfy.ops.fp8_ops.Linear): cast input to bf16 as well.
+        #   fp8_ops.Linear defers weight cast to cast_bias_weight (dtype derived
+        #   from input). scaled_mm supports (bf16 in, bf16 out, bias) but rejects
+        #   (float32 in, float32 out, bias); passing float32 here would force
+        #   fallback to F.linear and let float32 bleed into downstream
+        #   activations (speed + VRAM regression, see issue #25).
         timestep_embedder_dtype = next(self.timestep_embedder.parameters()).dtype
         if timestep_embedder_dtype in (torch.float8_e4m3fn, torch.float8_e5m2):
-            conditioning = self.timestep_embedder(timesteps_proj)
+            conditioning = self.timestep_embedder(timesteps_proj.to(torch.bfloat16))
         else:
             conditioning = self.timestep_embedder(timesteps_proj.to(timestep_embedder_dtype))  # (N, D)
         if pooled_projection is not None:

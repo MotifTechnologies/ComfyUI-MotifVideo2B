@@ -57,6 +57,18 @@ python main.py --highvram --listen 0.0.0.0 --port 8188
 
 **원인**: ComfyUI 의 `comfy_aimdo` (DynamicVRAM) 가 활성화된 환경에서 `comfy.ops.*` layer 보유 모델은 NORMAL_VRAM 시 자동으로 staged 분기 → forward 시 매번 weight dispatch 발생. 본 모델은 fp8/manual_cast 호환 위해 모든 leaf 가 `comfy.ops.*` 사용. 구조적 한계로 모델 코드 수준 fix 불가능 (#26 추적). `--highvram` 으로 우회.
 
+### fp8_e4m3fn workflow 지원 (2026-04-23, #25 수정)
+
+`weight_dtype=fp8_e4m3fn` + `--highvram` 조합이 실사용 가능한 상태로 복원됨 (이전에는 매 step `Exception during fp8 op: Bias is not supported when out_dtype is set to Float32` 로그 13회 반복 + VRAM 48GB + 222s/step).
+
+| 설정 | VRAM peak | s/step | 비고 |
+|------|----------|--------|------|
+| bf16 + `--highvram` | ~30GB | 30s | 기준 |
+| **fp8_e4m3fn + `--highvram`** | **~28GB** | **~31s** | 실사용 권장 (F3 실측) |
+| fp8 + NORMAL_VRAM | 사용 지양 | — | staged + 이전 fallback 회귀 가능 |
+
+수정 내용: `MotifVideoConditionEmbedding.forward` 의 fp8 분기에서 `timesteps_proj` 를 `torch.bfloat16` 로 cast (float32 활성화 전파 차단 + scaled_mm `out_dtype=bf16 + bias` 경로 진입).
+
 ## 워크플로우
 
 ```

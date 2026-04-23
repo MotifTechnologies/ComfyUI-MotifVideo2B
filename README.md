@@ -44,6 +44,19 @@ ln -s /path/to/checkpoint/vae/diffusion_pytorch_model.safetensors \
   models/vae/motifvideo_vae.safetensors
 ```
 
+## 성능 권장 사항
+
+**ComfyUI launch 시 `--highvram` 사용 권장** (H200 등 충분한 VRAM 환경):
+
+```bash
+python main.py --highvram --listen 0.0.0.0 --port 8188
+```
+
+- `--highvram` 미지정 (기본 NORMAL_VRAM): bf16 워크플로우에서 step 시간 222s/step (transformer staged 발생)
+- `--highvram` 지정: 30s/step (모든 weight GPU 영구 상주)
+
+**원인**: ComfyUI 의 `comfy_aimdo` (DynamicVRAM) 가 활성화된 환경에서 `comfy.ops.*` layer 보유 모델은 NORMAL_VRAM 시 자동으로 staged 분기 → forward 시 매번 weight dispatch 발생. 본 모델은 fp8/manual_cast 호환 위해 모든 leaf 가 `comfy.ops.*` 사용. 구조적 한계로 모델 코드 수준 fix 불가능 (#26 추적). `--highvram` 으로 우회.
+
 ## 워크플로우
 
 ```

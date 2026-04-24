@@ -1,8 +1,4 @@
 <p align="center">
-  <img src="assets/banner.png" width="100%" alt="Motif-Video 2B teaser"/>
-</p>
-
-<p align="center">
   <h1 align="center">ComfyUI-MotifVideo2B</h1>
 </p>
 
@@ -25,7 +21,6 @@
 
 Motif-Video 2B is a flow-matching diffusion transformer organized around a three-stage DDT-style backbone (dual-stream + single-stream + DDT decoder) with **Shared Cross-Attention** for long-context text alignment. The architectural derivation and full training recipe are in the [Motif-Video 2B technical report](https://arxiv.org/abs/2604.16503); this repository ships the inference-time ComfyUI integration.
 
-These nodes are first-class citizens of ComfyUI's memory manager: FP8 weight conversion, CPU offload, and attention-backend auto-selection (Flash / cuDNN / xFormers) are all delegated to the engine rather than reimplemented. What this repository adds on top is MotifVideo-specific glue: the T5Gemma2 text encoder, the Wan-family 3D VAE in diffusers layout, a TeaCache accelerator, and an Image-to-Video conditioning node.
 
 <p align="center">
   <img src="assets/demo.gif" width="100%" alt="ComfyUI-MotifVideo2B demo"/>
@@ -75,8 +70,6 @@ huggingface-cli download Motif-Technologies/Motif-Video-2B \
 
 The VAE is in diffusers layout; its `state_dict` keys are remapped to ComfyUI's WAN VAE at load time, so no manual conversion is needed.
 
-> **Filename note.** The exact on-disk filename of the transformer is arbitrary — it just needs to match the value selected in the `UNETLoader` node of the workflow you load. The example workflows under `workflows/` ship with their own filenames bound; either rename your download to match, or open the workflow and change the `UNETLoader` value to whatever you saved locally. The text encoder directory (`motifvideo_t5gemma2/`) and VAE (`motifvideo_vae.safetensors`) use the fixed names above in both shipped workflows.
-
 ---
 
 ## Usage
@@ -109,12 +102,6 @@ python main.py --highvram --listen 0.0.0.0 --port 8188
 
 ---
 
-## Workflow
-
-The standard MotifVideo sampling graph flows `UNETLoader → ModelSamplingSD3 → KSampler → VAE Decode → Create Video → Save Video`, with `MotifTextEncoderLoader + MotifTextEncode` feeding the KSampler conditioning and `EmptyMotifLatent` seeding the latent. The complete wiring is in [`workflows/Motif-2B_T2V_example.json`](workflows/Motif-2B_T2V_example.json) — load it through ComfyUI's **Load** menu rather than rebuilding the graph by hand.
-
----
-
 ## Performance
 
 Measured on a single H200 with the default 1280×736, 121-frame workflow:
@@ -142,12 +129,12 @@ Switch back to T2V by removing the `MotifVideo Image Encode` node and wiring `Mo
 
 ## Workflows
 
-Reference workflows live under `workflows/`:
+The standard MotifVideo sampling graph flows `UNETLoader → ModelSamplingSD3 → KSampler → VAE Decode → Create Video → Save Video`, with `MotifTextEncoderLoader + MotifTextEncode` feeding the KSampler conditioning and `EmptyMotifLatent` seeding the latent. Load the example JSON through ComfyUI's **Load** menu rather than rebuilding the graph by hand:
 
-- [`workflows/Motif-2B_T2V_example.json`](workflows/Motif-2B_T2V_example.json) — default Text-to-Video graph (1280×736, KSampler sampler `dpmpp_2m_sde` / scheduler `simple` / 50 steps, wrapped as a reusable ComfyUI subgraph).
+- [`workflows/Motif-2B_T2V_example.json`](workflows/Motif-2B_T2V_example.json) — default Text-to-Video graph (1280×736, KSampler `dpmpp_2m_sde` / `simple` / 50 steps, wrapped as a reusable ComfyUI subgraph).
 - [`workflows/i2v_example.json`](workflows/i2v_example.json) — Image-to-Video graph (1280×736 / 121 frames, KSampler `euler` / `simple` / 50 steps, `ModelSamplingSD3` shift 2.5).
 
-Load either JSON from ComfyUI's **Load** menu. Make sure the model files described in the [Installation](#installation) section are in place first, and that the `UNETLoader`/text-encoder/VAE selections in the workflow match your local filenames.
+Make sure the model files described in the [Installation](#installation) section are in place first, and that the `UNETLoader` / text-encoder / VAE selections inside the loaded workflow match your local filenames.
 
 ---
 

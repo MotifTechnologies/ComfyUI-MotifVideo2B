@@ -114,6 +114,18 @@ Measured on a single H200 with the default 1280×736, 121-frame workflow:
 
 ---
 
+## Text-to-Video
+
+T2V is the default sampling path: `MotifVideo Text Encode` feeds `KSampler` directly, with no image-conditioning branch. The full wiring is in [`workflows/Motif-2B_T2V_example.json`](workflows/Motif-2B_T2V_example.json), shipped as a reusable ComfyUI subgraph.
+
+Recommended parameters, as shipped in `Motif-2B_T2V_example.json`:
+- `ModelSamplingSD3` shift = 15
+- `APG` eta = 0, norm_threshold = 12, momentum = 0.1 (Adaptive Projected Guidance, between ModelSamplingSD3 and KSampler)
+- `KSampler` cfg = 8.0, steps = 50, sampler = `dpmpp_2m_sde`, scheduler = `simple`
+- `EmptyMotifLatent` 1280×736, 33 frames
+
+---
+
 ## Image-to-Video
 
 For I2V, `MotifVideo Image Encode` sits between `MotifVideo Text Encode` and `KSampler`: it VAE-encodes the input image and injects it into the conditioning as `concat_latent_image`, so downstream nodes continue to see a normal `CONDITIONING` pair. The full wiring is in [`workflows/Motif-2B_I2V_example.json`](workflows/Motif-2B_I2V_example.json).

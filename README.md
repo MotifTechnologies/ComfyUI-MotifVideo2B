@@ -11,24 +11,15 @@
 </p>
 
 <p align="center">
-  📑 <a href="https://arxiv.org/abs/2604.16503">Technical Report</a> &nbsp;|&nbsp;
-  🤗 <a href="https://huggingface.co/Motif-Technologies/Motif-Video-2B">Hugging Face</a> &nbsp;|&nbsp;
-  🌐 <a href="https://motiftech.io/videoshowcase">Project Page</a>
+  <a href="https://arxiv.org/abs/2604.16503">Technical Report</a> &nbsp;|&nbsp;
+  <a href="https://huggingface.co/Motif-Technologies/Motif-Video-2B">Hugging Face</a> &nbsp;|&nbsp;
+  <a href="https://motiftech.io/videoshowcase">Project Page</a>
 </p>
 
----
-
-## 🔥 News
-
-- **[2026-04-23]** `MotifVideoUnetLoaderGGUF` node added for experimental GGUF loading (MM-1134). GGUF is **not recommended** for production — see the GGUF advisory in the Performance section.
-- **[2026-04-23]** `fp8_e4m3fn` workflow restored. `fp8_e4m3fn + --highvram` is now the recommended production path (~28 GB VRAM, ~31 s/step on H200) (#25).
-- **[2026-04-04]** Default transformer checkpoint switched to the `720p-6_400` cross-attention fine-tune. The variant is auto-detected from `state_dict` keys, so existing workflows continue to work.
-
-> **Note on naming.** Motif-Video 2B is the public release name of the model. The internal filename `motifvideo_1.9b.safetensors` (and checkpoint strings such as `motif-video-1.9b-720p-6_400`) predates the 2B branding and is preserved as a user-facing technical identifier — it refers to the same Motif-Video 2B model.
 
 ---
 
-## 📖 Introduction
+## Introduction
 
 `ComfyUI-MotifVideo2B` exposes Motif Technologies' Motif-Video 2B text-to-video and image-to-video diffusion transformer as a set of ComfyUI custom nodes, so the model plugs directly into the standard `Load Diffusion Model → KSampler → VAE Decode` graph.
 
@@ -36,107 +27,110 @@ Motif-Video 2B is a flow-matching diffusion transformer organized around a three
 
 These nodes are first-class citizens of ComfyUI's memory manager: FP8 weight conversion, CPU offload, and attention-backend auto-selection (Flash / cuDNN / xFormers) are all delegated to the engine rather than reimplemented. What this repository adds on top is MotifVideo-specific glue: the T5Gemma2 text encoder, the Wan-family 3D VAE in diffusers layout, a TeaCache accelerator, and an Image-to-Video conditioning node.
 
+<p align="center">
+  <img src="assets/demo.gif" width="100%" alt="ComfyUI-MotifVideo2B demo"/>
+</p>
+
 ---
 
 ## Features
 
-- **Load Diffusion Model** 호환 — 기존 ComfyUI 노드로 transformer 로드 (FP8 지원)
-- **Load MotifVideo Text Encoder** — T5Gemma2 text encoder를 ComfyUI CLIP 시스템으로 로드
-- **MotifVideo Text Encode** — positive/negative 프롬프트 편의 노드
-- **Empty MotifVideo Latent** — 비디오 latent 생성 (1280x736, 121 frames 등)
-- **Load MotifVideo VAE** — diffusers 포맷 3D 비디오 VAE 로드 (키 자동 변환)
-- **MotifVideo TeaCache** — TeaCache 가속으로 샘플링 속도 향상 (캐시 기반 블록 스킵)
-- **MotifVideo Image Encode** — Image-to-Video: 입력 이미지를 VAE 인코딩 후 conditioning에 주입
-- ComfyUI 내장 메모리 관리, offload, FP8 변환 자동 적용
+- **Load Diffusion Model** compatibility — loads the transformer through ComfyUI's stock `Load Diffusion Model` node, with full FP8 (`fp8_e4m3fn`) support
+- **Load MotifVideo Text Encoder** — exposes the T5Gemma2 text encoder as a standard ComfyUI `CLIP` object
+- **MotifVideo Text Encode** — convenience node that takes a positive prompt and a negative prompt in a single node and emits paired positive / negative `CONDITIONING`
+- **Empty MotifVideo Latent** — creates an empty video latent (default 1280×736, 121 frames) sized for the Wan-family VAE
+- **Load MotifVideo VAE** — loads the 3D video VAE in diffusers layout and remaps the state-dict keys to ComfyUI's WAN VAE at load time
+- **MotifVideo TeaCache** — plug-in TeaCache accelerator that reuses the previous step's output when the timestep-modulated L1 distance between successive inputs falls below a threshold
+- **MotifVideo Image Encode** — Image-to-Video conditioning: VAE-encodes the input image and injects it into the conditioning as `concat_latent_image`
+- **MotifVideoUnetLoaderGGUF** — experimental GGUF loader for `general.architecture=motif_video` files (see the Performance section for why GGUF is not recommended)
+- Delegates memory management, CPU offload, FP8 weight conversion, and attention-backend selection to ComfyUI's built-in systems — no parallel implementation
 
-## 설치
+---
 
-### 의존성
+## Installation
 
-```bash
-cd /path/to/ComfyUI
-pip install -r custom_nodes/ComfyUI-MotifVideo1.9B/requirements.txt
-```
-
-motif_core, motif-pipelines 별도 설치 불필요. MotifVideoTransformer3DModel이 `models/transformer/`에 내장되어 있어 독립 배포가 가능합니다.
-
-### 모델 심링크
+### 1. Install the custom nodes
 
 ```bash
-# Transformer
-ln -s /path/to/checkpoint/transformer/diffusion_pytorch_model.safetensors \
-  models/diffusion_models/motifvideo_1.9b.safetensors
-
-# Text Encoder (디렉토리)
-ln -s /path/to/checkpoint/text_encoder \
-  models/text_encoders/motifvideo_t5gemma2
-
-# Tokenizer (디렉토리)
-ln -s /path/to/checkpoint/tokenizer \
-  models/text_encoders/motifvideo_tokenizer
-
-# VAE (diffusers 포맷 → 자동 변환)
-ln -s /path/to/checkpoint/vae/diffusion_pytorch_model.safetensors \
-  models/vae/motifvideo_vae.safetensors
+cd /path/to/ComfyUI/custom_nodes
+git clone https://github.com/MotifTechnologies/ComfyUI-MotifVideo2B.git
+pip install -r ComfyUI-MotifVideo2B/requirements.txt
 ```
 
-## 성능 권장 사항
+`motif_core` and `motif-pipelines` do not need to be installed separately — `MotifVideoTransformer3DModel` is bundled under `models/transformer/`, so the repository is self-contained.
 
-**ComfyUI launch 시 `--highvram` 사용 권장** (H200 등 충분한 VRAM 환경):
+### 2. Download the model weights from Hugging Face
+
+All weights live on the official Hugging Face repository:
+
+- 🤗 <https://huggingface.co/Motif-Technologies/Motif-Video-2B>
+
+Download the files listed below and place them under ComfyUI's standard model directories. The filenames and target directories shown here are the ones the example workflows load by default — pick your own names if you prefer, but keep the target directory the same.
+
+```
+ComfyUI/
+├── models/
+│   ├── diffusion_models/
+│   │   └── motifvideo_2b.safetensors         ← transformer/diffusion_pytorch_model.safetensors
+│   ├── text_encoders/
+│   │   ├── motifvideo_t5gemma2/                ← text_encoder/ (entire directory)
+│   │   └── motifvideo_tokenizer/               ← tokenizer/ (entire directory)
+│   └── vae/    
+│       └── motifvideo_vae.safetensors          ← vae/diffusion_pytorch_model.safetensors
+```
+
+The easiest way to fetch all of them at once is `huggingface-cli`:
+
+```bash
+huggingface-cli download Motif-Technologies/Motif-Video-2B \
+  --local-dir /tmp/motif-video-2b
+# then copy or move the four pieces into the directories shown above
+```
+
+The VAE is in diffusers layout; its `state_dict` keys are remapped to ComfyUI's WAN VAE at load time, so no manual conversion is needed.
+
+---
+
+## Usage
+
+### Recommended: launch ComfyUI with `--highvram`
+
+On a host with enough VRAM (H200 or similar), use `--highvram`:
 
 ```bash
 python main.py --highvram --listen 0.0.0.0 --port 8188
 ```
 
-- `--highvram` 미지정 (기본 NORMAL_VRAM): bf16 워크플로우에서 step 시간 222s/step (transformer staged 발생)
-- `--highvram` 지정: 30s/step (모든 weight GPU 영구 상주)
+- Without `--highvram` (default `NORMAL_VRAM`): a bf16 workflow runs at roughly **222 s/step** — the transformer is placed on the "staged" path and weights are dispatched every forward.
+- With `--highvram`: **30 s/step** — all weights stay resident on the GPU.
 
-**원인**: ComfyUI 의 `comfy_aimdo` (DynamicVRAM) 가 활성화된 환경에서 `comfy.ops.*` layer 보유 모델은 NORMAL_VRAM 시 자동으로 staged 분기 → forward 시 매번 weight dispatch 발생. 본 모델은 fp8/manual_cast 호환 위해 모든 leaf 가 `comfy.ops.*` 사용. 구조적 한계로 모델 코드 수준 fix 불가능 (#26 추적). `--highvram` 으로 우회.
+**Why.** On hosts where ComfyUI's `comfy_aimdo` (`DynamicVRAM`) is active, models whose leaves use `comfy.ops.*` are automatically routed to the staged path under `NORMAL_VRAM`, which means weight dispatch on every forward. This repository's transformer deliberately uses `comfy.ops.*` end-to-end so that `fp8`/`manual_cast` paths work, which means the staging cannot be disabled at the model level. The engine-side workaround is `--highvram`. Tracked in #26.
 
-### fp8_e4m3fn workflow 지원 (2026-04-23, #25 수정)
 
-`weight_dtype=fp8_e4m3fn` + `--highvram` 조합이 실사용 가능한 상태로 복원됨 (이전에는 매 step `Exception during fp8 op: Bias is not supported when out_dtype is set to Float32` 로그 13회 반복 + VRAM 48GB + 222s/step).
+---
 
-| 설정 | VRAM peak | s/step | 비고 |
-|------|----------|--------|------|
-| bf16 + `--highvram` | ~30GB | 30s | 기준 |
-| **fp8_e4m3fn + `--highvram`** | **~28GB** | **~31s** | 실사용 권장 (F3 실측) |
-| fp8 + NORMAL_VRAM | 사용 지양 | — | staged + 이전 fallback 회귀 가능 |
+## Nodes
 
-수정 내용: `MotifVideoConditionEmbedding.forward` 의 fp8 분기에서 `timesteps_proj` 를 `torch.bfloat16` 로 cast (float32 활성화 전파 차단 + scaled_mm `out_dtype=bf16 + bias` 경로 진입).
+| Node | Inputs | Outputs | Description |
+|------|--------|---------|-------------|
+| Load MotifVideo Text Encoder | clip_name, dtype | CLIP | Loads the T5Gemma2 encoder and exposes it as a ComfyUI `CLIP` |
+| MotifVideo Text Encode | CLIP, text, negative_prompt | CONDITIONING × 2 | Encodes positive and negative prompts in a single node |
+| Empty MotifVideo Latent | width, height, num_frames, batch_size | LATENT | Empty video latent sized for the Wan-family VAE |
+| Load MotifVideo VAE | vae_name | VAE | Loads the 3D VAE in diffusers layout with automatic key remapping |
+| MotifVideo Image Encode | positive, negative, VAE, IMAGE | CONDITIONING × 2 | I2V: VAE-encodes the input image and injects it into the conditioning |
 
-### GGUF workflow 지원 (2026-04-23, MM-1134)
+---
 
-`general.architecture=motif_video` GGUF (diffusers 로 export) 로드를 위한 `MotifVideoUnetLoaderGGUF` 노드 추가. ComfyUI-GGUF 의 핵심 unit 을 Apache-2.0 하에 부분 차용.
-
-**필수 선행 설치**: [ComfyUI-GGUF](https://github.com/city96/ComfyUI-GGUF) 를 `custom_nodes/` 에 설치. 부재 시 `unet_gguf` 드롭다운이 비어있고 WARNING 로그 출력.
-
-**workflow 노드 교체**: 기존 ComfyUI-GGUF 의 `UnetLoaderGGUF` 는 `IMG_ARCH_LIST` whitelist 거부로 `motif_video` 로드 불가. 워크플로 JSON 의 해당 노드를 `MotifVideoUnetLoaderGGUF` (카테고리: `MotifVideo/loaders`) 로 교체 후 `unet_name` 재선택.
-
-**실측 결과** (Q4_0 + `--highvram`, H200, motif_video.json):
-
-| 설정 | VRAM peak | s/step | 비고 |
-|------|----------|--------|------|
-| **fp8_e4m3fn + `--highvram`** | ~28GB | ~31s | 권장 경로 |
-| GGUF Q4_0 + `--highvram` | **~36GB** | **~220s** | 동작은 하나 성능 열세 |
-
-**성능 열세 원인** (구조적, upstream ComfyUI-GGUF 한계):
-- `GGMLOps.Linear` 가 dequant-on-the-fly (매 forward 마다 Q4_0 → bf16 full tensor 생성). MotifVideo ~360 Linear × 50 step = 18,000 dequant 사이클.
-- forward 시점 모든 weight 는 GPU 상주 (staged 아님 — `MOTIFVIDEO_GGUF_DIAG=1` 로 검증 완료, cuda=467 cpu=0). 느림의 원인은 순수 dequant 오버헤드.
-- dequant 임시 버퍼 누적으로 VRAM 도 fp8 대비 증가.
-
-**권장 사항**: 프로덕션 샘플링은 fp8 경로 사용. GGUF 는 디스크 용량/초기 로드 VRAM 이 제약인 환경에서만 고려.
-
-## 워크플로우
+## Workflow
 
 ```
 [Load Diffusion Model]          → motifvideo_1.9b (bf16/fp8)
          ↓ MODEL
-[MotifVideo TeaCache]           → MODEL (TeaCache 가속 적용)
+[MotifVideo TeaCache]           → MODEL (TeaCache applied)
          ↓ MODEL
 [Load MotifVideo Text Encoder]  → motifvideo_t5gemma2/model.safetensors
          ↓ CLIP
-[MotifVideo Text Encode]        → 프롬프트 입력
+[MotifVideo Text Encode]        → positive + negative prompts
          ↓ positive, negative
 [Empty MotifVideo Latent]       → 1280x736, 121 frames
          ↓ LATENT
@@ -144,93 +138,67 @@ python main.py --highvram --listen 0.0.0.0 --port 8188
          ↓ LATENT
 [Load MotifVideo VAE]           → motifvideo_vae.safetensors
          ↓ VAE
-[VAE Decode]                    → 비디오 출력
+[VAE Decode]                    → video output
 ```
 
-## 노드
+---
 
-| 노드 | 입력 | 출력 | 설명 |
-|------|------|------|------|
-| MotifVideo TeaCache | model, rel_l1_thresh, enable, start, end, calibrate | MODEL | TeaCache 가속 적용 (샘플링 속도 향상) |
-| Load MotifVideo Text Encoder | clip_name, dtype | CLIP | T5Gemma2 텍스트 인코더 로드 |
-| MotifVideo Text Encode | CLIP, text, negative_prompt | CONDITIONING x2 | 프롬프트 인코딩 |
-| Empty MotifVideo Latent | width, height, num_frames, batch_size | LATENT | 빈 비디오 latent |
-| Load MotifVideo VAE | vae_name | VAE | diffusers 포맷 3D VAE 로드 (키 자동 변환) |
-| MotifVideo Image Encode | positive, negative, VAE, IMAGE | CONDITIONING x2 | I2V: 이미지를 VAE 인코딩 후 conditioning에 주입 |
+## Performance
 
-### Image-to-Video (I2V)
+Measured on a single H200 with the default 1280×736, 121-frame workflow:
 
-`MotifVideo Image Encode` 노드를 `MotifVideo Text Encode`와 `KSampler` 사이에 연결하면 I2V 모드로 동작합니다.
+| Setup | VRAM peak | s/step | Notes |
+|-------|-----------|--------|-------|
+| bf16 + `--highvram` | ~30 GB | 30 s | Baseline |
+| **fp8_e4m3fn + `--highvram`** | **~28 GB** | **~31 s** | **Recommended** production path |
+| fp8 + `NORMAL_VRAM` | — | — | Avoid — staged path and earlier fallback regression can re-emerge |
+
+---
+
+## Image-to-Video
+
+Insert a `MotifVideo Image Encode` node between `MotifVideo Text Encode` and `KSampler` to run in I2V mode:
 
 ```
-[LoadImage]                     → 입력 이미지
+[LoadImage]                     → input image
          ↓ IMAGE
 [MotifVideo Image Encode]       ← VAE + positive + negative
-         ↓ positive, negative (concat_latent_image 주입됨)
+         ↓ positive, negative (concat_latent_image injected)
 [KSampler]                      ← MODEL + modified conditioning + LATENT
 ```
 
-- I2V 권장 파라미터: `ModelSamplingSD3` shift=2.5, KSampler cfg=8.0
-- T2V 전환: `MotifVideo Image Encode` 노드를 제거하고 `MotifVideo Text Encode` 출력을 직접 KSampler에 연결
-- 예제 워크플로우: `workflows/i2v_example.json`
+- Recommended I2V parameters: `ModelSamplingSD3` shift = 15, KSampler cfg = 8.0.
+- To go back to T2V, remove the `MotifVideo Image Encode` node and wire `MotifVideo Text Encode` straight into `KSampler`.
 
-### TeaCache 파라미터
+---
 
-**MotifVideo TeaCache** 노드 파라미터:
-- `rel_l1_thresh` (float): 캐시 재사용 임계값. 낮을수록 더 공격적 캐싱으로 빠르지만 품질 저하 위험. 높을수록 안전하지만 속도 향상 제한. 권장값: **0.15–0.3**
-- `enable` (boolean): True = TeaCache 적용, False = 비활성화 (A/B 비교 용도)
-- `start` (float, 0.0–1.0): TeaCache가 활성화되는 샘플링 진행도 시작점. 0.0=샘플링 시작(고노이즈), 1.0=샘플링 끝(클린). 초기 스텝(코스 구조 결정 구간)은 캐싱하지 않는 것이 품질에 유리하므로 0.1–0.2 권장. 기본값: **0.0** (전체 구간 캐싱)
-- `end` (float, 0.0–1.0): TeaCache가 비활성화되는 샘플링 진행도 종료점. 후반 스텝(세부 디테일 결정 구간)은 캐싱하지 않는 것이 품질에 유리하므로 0.8–0.9 권장. 기본값: **1.0** (전체 구간 캐싱)
-- `calibrate` (boolean): True = 캘리브레이션 모드. 캐싱을 하지 않고 모든 스텝에서 full forward를 실행하며 (raw_diff, output_diff) 데이터를 수집합니다. 수집된 데이터로 polynomial coefficients를 재학습하여 정확도를 높일 수 있습니다. 기본값: **False**
+## Workflows
 
-## 체크포인트 교체
+Reference workflows live under `workflows/`:
 
-학습된 새 transformer 체크포인트로 교체:
+- `workflows/Motif-2B_T2V_example.json` — default Text-to-Video starter graph.
+- `workflows/Motif-2B_I2V_example.json` — Image-to-Video starter graph.
 
-```bash
-# 새 체크포인트 심링크
-ln -s /path/to/new_checkpoint/transformer/diffusion_pytorch_model.safetensors \
-  models/diffusion_models/motifvideo_new.safetensors
+Load either JSON from ComfyUI's **Load** menu; all nodes referenced above are wired up. Make sure the model files described in the Installation section are in place first.
+
+---
+
+## Citation
+
+If you use Motif-Video 2B in your research, please cite the technical report:
+
+```bibtex
+@techreport{motifvideo2b2026,
+  title       = {Motif-Video 2B: Technical Report},
+  author      = {Motif Technologies},
+  year        = {2026},
+  institution = {Motif Technologies},
+  url         = {https://arxiv.org/abs/2604.16503}
+}
 ```
 
-ComfyUI에서 `Load Diffusion Model` → `motifvideo_new` 선택.
+---
 
-### 기본 체크포인트 변경 안내 (2026-04-04)
+## License
 
-기본 체크포인트(`motifvideo_1.9b`)가 cross-attn fine-tune 체크포인트(720p-6_400)로 변경되었습니다.
-
-- 새 기본 체크포인트: `motif-video-1.9b-720p-6_400` (cross-attn fine-tune)
-  - `enable_text_cross_attention_single=True` 지원
-  - state_dict 키 기반 자동 감지 (`single_transformer_blocks.0.cross_attn_query_proj.weight`)
-- 이전 기본 체크포인트(`motifvideo_1.9b`)를 계속 사용하려면 별도 심링크 필요:
-
-```bash
-ln -s /path/to/original_checkpoint/transformer/diffusion_pytorch_model.safetensors \
-  models/diffusion_models/motifvideo_1.9b_original.safetensors
-```
-
-## 아키텍처
-
-- Transformer: MotifVideoTransformer3DModel (`models/transformer/transformer_motif_video.py` 내장)
-  - cross-attn variant 자동 감지: state_dict 키(`single_transformer_blocks.0.cross_attn_query_proj.weight`, `transformer_blocks.0.cross_attn_query_proj.weight`) 기반으로 `enable_text_cross_attention_single/dual` 자동 설정
-  - patch_size, patch_size_t: state_dict에서 동적 감지 (하드코딩 제거)
-- Text Encoder: T5Gemma2Model (transformers 5.0.0+)
-- VAE: AutoencoderKLWan (diffusers 키 자동 변환 → ComfyUI WAN VAE)
-- Scheduler: FlowMatchEulerDiscreteScheduler (KSampler 연동)
-
-### Upstream 동기화
-
-motif_core 원본이 변경되면 수동으로 내장 파일을 업데이트해야 합니다.
-
-| 내장 파일 | 원본 위치 | 비고 |
-|-----------|-----------|------|
-| `models/transformer/transformer_motif_video.py` | `motif-core/src/motif_core/models/transformers/` | import 경로 변환 필요 |
-| `models/transformer/tread_mixin.py` | `motif-core/src/motif_core/models/mixin/` | loguru→logging 교체 필요 |
-| `models/transformer/accelerate_patch.py` | — | no-op stub (동기화 불필요) |
-
-복사 후 `from motif_core.` → 로컬 상대 import, `from loguru import logger` → `import logging` 교체 필요.
-
-## Jira
-
-- [MM-959](https://motiftech-kr-team.atlassian.net/browse/MM-959)
-- [MM-1036](https://motiftech-kr-team.atlassian.net/browse/MM-1036)
+This repository is released under the **Apache 2.0** License. See `LICENSE` for details.

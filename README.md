@@ -42,29 +42,39 @@ All weights live on the official Hugging Face repository:
 
 - 🤗 <https://huggingface.co/Motif-Technologies/Motif-Video-2B>
 
-Download the files listed below and place them under ComfyUI's standard model directories. The filenames and target directories shown here are the ones the example workflows load by default — pick your own names if you prefer, but keep the target directory the same.
+Download the three files listed below and place them under ComfyUI's standard model directories. The filenames and target directories shown here are the ones the example workflows load by default — pick your own names if you prefer, but keep the target directory the same.
 
 ```
 ComfyUI/
 ├── models/
 │   ├── diffusion_models/
-│   │   └── motifvideo_2b.safetensors         ← transformer/diffusion_pytorch_model.safetensors
+│   │   └── motifvideo_2b.safetensors       ← transformer/diffusion_pytorch_model.safetensors
 │   ├── text_encoders/
-│   │   ├── motifvideo_t5gemma2/                ← text_encoder/ (entire directory)
-│   │   └── motifvideo_tokenizer/               ← tokenizer/ (entire directory)
-│   └── vae/    
-│       └── motifvideo_vae.safetensors          ← vae/diffusion_pytorch_model.safetensors
+│   │   └── motifvideo_t5gemma2.safetensors ← text_encoder/model.safetensors (rename when you save it)
+│   └── vae/
+│       └── motifvideo_vae.safetensors      ← vae/diffusion_pytorch_model.safetensors
 ```
 
-The easiest way to fetch all of them at once is `huggingface-cli`:
+Use `huggingface-cli` to fetch the three files you need:
 
 ```bash
+# Option A: huggingface-cli (fetch only the files you need)
 huggingface-cli download Motif-Technologies/Motif-Video-2B \
+  transformer/diffusion_pytorch_model.safetensors \
+  text_encoder/model.safetensors \
+  vae/diffusion_pytorch_model.safetensors \
   --local-dir /tmp/motif-video-2b
-# then copy or move the four pieces into the directories shown above
 ```
 
+After download, rename the files to match the local naming convention above: `transformer/diffusion_pytorch_model.safetensors` → `motifvideo_2b.safetensors`, `text_encoder/model.safetensors` → `motifvideo_t5gemma2.safetensors`, and `vae/diffusion_pytorch_model.safetensors` → `motifvideo_vae.safetensors`. Then place each in its target directory shown above.
+
 The VAE is in diffusers layout; its `state_dict` keys are remapped to ComfyUI's WAN VAE at load time, so no manual conversion is needed.
+
+### Migrating from a previous install
+
+Earlier versions required a directory layout under `models/text_encoders/` (one directory for the text encoder weights and a second for the tokenizer files). That is no longer used — this node bundles the T5Gemma2 tokenizer and config, and the loader only needs a single `motifvideo_t5gemma2.safetensors` file.
+
+If you have a previous install, move the text-encoder weight out of the old `motifvideo_t5gemma2/` subdirectory, rename it to `motifvideo_t5gemma2.safetensors`, and delete both the `motifvideo_t5gemma2/` and `motifvideo_tokenizer/` directories. Then re-select the text encoder inside the workflow.
 
 ---
 

@@ -33,20 +33,6 @@ These nodes are first-class citizens of ComfyUI's memory manager: FP8 weight con
 
 ---
 
-## Features
-
-- **Load Diffusion Model** compatibility — loads the transformer through ComfyUI's stock `Load Diffusion Model` node, with full FP8 (`fp8_e4m3fn`) support
-- **Load MotifVideo Text Encoder** — exposes the T5Gemma2 text encoder as a standard ComfyUI `CLIP` object
-- **MotifVideo Text Encode** — convenience node that takes a positive prompt and a negative prompt in a single node and emits paired positive / negative `CONDITIONING`
-- **Empty MotifVideo Latent** — creates an empty video latent (default 1280×736, 121 frames) sized for the Wan-family VAE
-- **Load MotifVideo VAE** — loads the 3D video VAE in diffusers layout and remaps the state-dict keys to ComfyUI's WAN VAE at load time
-- **MotifVideo TeaCache** — plug-in TeaCache accelerator that reuses the previous step's output when the timestep-modulated L1 distance between successive inputs falls below a threshold
-- **MotifVideo Image Encode** — Image-to-Video conditioning: VAE-encodes the input image and injects it into the conditioning as `concat_latent_image`
-- **MotifVideoUnetLoaderGGUF** — experimental GGUF loader for `general.architecture=motif_video` files (see the Performance section for why GGUF is not recommended)
-- Delegates memory management, CPU offload, FP8 weight conversion, and attention-backend selection to ComfyUI's built-in systems — no parallel implementation
-
----
-
 ## Installation
 
 ### 1. Install the custom nodes
@@ -89,6 +75,8 @@ huggingface-cli download Motif-Technologies/Motif-Video-2B \
 
 The VAE is in diffusers layout; its `state_dict` keys are remapped to ComfyUI's WAN VAE at load time, so no manual conversion is needed.
 
+> **Filename note.** The exact on-disk filename of the transformer is arbitrary — it just needs to match the value selected in the `UNETLoader` node of the workflow you load. The example workflows under `workflows/` ship with their own filenames bound; either rename your download to match, or open the workflow and change the `UNETLoader` value to whatever you saved locally. The text encoder directory (`motifvideo_t5gemma2/`) and VAE (`motifvideo_vae.safetensors`) use the fixed names above in both shipped workflows.
+
 ---
 
 ## Usage
@@ -123,23 +111,7 @@ python main.py --highvram --listen 0.0.0.0 --port 8188
 
 ## Workflow
 
-```
-[Load Diffusion Model]          → motifvideo_1.9b (bf16/fp8)
-         ↓ MODEL
-[MotifVideo TeaCache]           → MODEL (TeaCache applied)
-         ↓ MODEL
-[Load MotifVideo Text Encoder]  → motifvideo_t5gemma2/model.safetensors
-         ↓ CLIP
-[MotifVideo Text Encode]        → positive + negative prompts
-         ↓ positive, negative
-[Empty MotifVideo Latent]       → 1280x736, 121 frames
-         ↓ LATENT
-[KSampler]                      ← MODEL + positive + negative + LATENT
-         ↓ LATENT
-[Load MotifVideo VAE]           → motifvideo_vae.safetensors
-         ↓ VAE
-[VAE Decode]                    → video output
-```
+The standard MotifVideo sampling graph flows `UNETLoader → ModelSamplingSD3 → KSampler → VAE Decode → Create Video → Save Video`, with `MotifTextEncoderLoader + MotifTextEncode` feeding the KSampler conditioning and `EmptyMotifLatent` seeding the latent. The complete wiring is in [`workflows/Motif-2B_T2V_example.json`](workflows/Motif-2B_T2V_example.json) — load it through ComfyUI's **Load** menu rather than rebuilding the graph by hand.
 
 ---
 
@@ -157,18 +129,14 @@ Measured on a single H200 with the default 1280×736, 121-frame workflow:
 
 ## Image-to-Video
 
-Insert a `MotifVideo Image Encode` node between `MotifVideo Text Encode` and `KSampler` to run in I2V mode:
+For I2V, `MotifVideo Image Encode` sits between `MotifVideo Text Encode` and `KSampler`: it VAE-encodes the input image and injects it into the conditioning as `concat_latent_image`, so downstream nodes continue to see a normal `CONDITIONING` pair. The full wiring is in [`workflows/i2v_example.json`](workflows/i2v_example.json).
 
-```
-[LoadImage]                     → input image
-         ↓ IMAGE
-[MotifVideo Image Encode]       ← VAE + positive + negative
-         ↓ positive, negative (concat_latent_image injected)
-[KSampler]                      ← MODEL + modified conditioning + LATENT
-```
+Recommended parameters, as shipped in `i2v_example.json`:
+- `ModelSamplingSD3` shift = 2.5
+- `KSampler` cfg = 8.0, steps = 50, sampler = `euler`, scheduler = `simple`
+- `EmptyMotifLatent` 1280×736, 121 frames
 
-- Recommended I2V parameters: `ModelSamplingSD3` shift = 15, KSampler cfg = 8.0.
-- To go back to T2V, remove the `MotifVideo Image Encode` node and wire `MotifVideo Text Encode` straight into `KSampler`.
+Switch back to T2V by removing the `MotifVideo Image Encode` node and wiring `MotifVideo Text Encode` straight into `KSampler` — or just load the T2V workflow instead.
 
 ---
 
@@ -176,10 +144,10 @@ Insert a `MotifVideo Image Encode` node between `MotifVideo Text Encode` and `KS
 
 Reference workflows live under `workflows/`:
 
-- `workflows/Motif-2B_T2V_example.json` — default Text-to-Video starter graph.
-- `workflows/Motif-2B_I2V_example.json` — Image-to-Video starter graph.
+- [`workflows/Motif-2B_T2V_example.json`](workflows/Motif-2B_T2V_example.json) — default Text-to-Video graph (1280×736, KSampler sampler `dpmpp_2m_sde` / scheduler `simple` / 50 steps, wrapped as a reusable ComfyUI subgraph).
+- [`workflows/i2v_example.json`](workflows/i2v_example.json) — Image-to-Video graph (1280×736 / 121 frames, KSampler `euler` / `simple` / 50 steps, `ModelSamplingSD3` shift 2.5).
 
-Load either JSON from ComfyUI's **Load** menu; all nodes referenced above are wired up. Make sure the model files described in the Installation section are in place first.
+Load either JSON from ComfyUI's **Load** menu. Make sure the model files described in the [Installation](#installation) section are in place first, and that the `UNETLoader`/text-encoder/VAE selections in the workflow match your local filenames.
 
 ---
 

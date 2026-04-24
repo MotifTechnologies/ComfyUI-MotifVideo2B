@@ -34,8 +34,10 @@ from .t5_gemma2_config import T5_GEMMA2_CONFIG
 class MotifVideoTokenizer(sd1_clip.SDTokenizer):
     """GemmaTokenizer wrapped as SDTokenizer for ComfyUI.
 
-    tokenizer_path must be a directory containing tokenizer.json /
-    tokenizer_config.json (the standard HuggingFace layout).
+    Defaults to the bundled directory at ``text_encoders/tokenizer_assets/``
+    (tokenizer.json + tokenizer_config.json shipped with the node). Callers
+    may override with ``tokenizer_data["motifvideo_tokenizer_path"]`` to
+    point to an alternate HuggingFace-layout directory.
 
     Special token mapping:
       bos_token_id = 2  → SDTokenizer start_token
@@ -47,13 +49,15 @@ class MotifVideoTokenizer(sd1_clip.SDTokenizer):
     explicitly.
     """
 
+    _BUNDLED_TOKENIZER_DIR = os.path.join(
+        os.path.dirname(os.path.realpath(__file__)),
+        "tokenizer_assets",
+    )
+
     def __init__(self, embedding_directory=None, tokenizer_data={}):
         tokenizer_path = tokenizer_data.get(
             "motifvideo_tokenizer_path",
-            os.path.join(
-                os.path.dirname(os.path.dirname(os.path.realpath(__file__))),
-                "..",   # not bundled — must be supplied via tokenizer_data
-            ),
+            self._BUNDLED_TOKENIZER_DIR,
         )
 
         from transformers import GemmaTokenizerFast

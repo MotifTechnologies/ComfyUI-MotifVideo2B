@@ -21,8 +21,8 @@ class EmptyMotifLatent:
     def INPUT_TYPES(s):
         return {
             "required": {
-                "width": ("INT", {"default": 1280, "min": 64, "max": 8192, "step": 8}),
-                "height": ("INT", {"default": 736, "min": 64, "max": 8192, "step": 8}),
+                "width": ("INT", {"default": 1280, "min": 64, "max": 8192, "step": 16}),
+                "height": ("INT", {"default": 736, "min": 64, "max": 8192, "step": 16}),
                 "num_frames": ("INT", {"default": 121, "min": 1, "max": 1024}),
                 "batch_size": ("INT", {"default": 1, "min": 1, "max": 64}),
             }
@@ -38,6 +38,10 @@ class EmptyMotifLatent:
     LATENT_CHANNELS = 16
 
     def generate(self, width, height, num_frames, batch_size):
+        # WAN VAE requires pixel H/W to be a multiple of 16 — floor-snap here
+        # so non-conformant values from saved workflows still encode cleanly.
+        width -= width % 16
+        height -= height % 16
         # Latent spatial dimensions
         latent_h = height // self.SPATIAL_FACTOR
         latent_w = width // self.SPATIAL_FACTOR

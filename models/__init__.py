@@ -168,6 +168,10 @@ class MotifVideoModel(comfy.model_base.BaseModel):
         if image is not None:
             # image may be [B, 16, 1, H, W] or [B, 16, H, W] — normalise shape
             image = self.process_latent_in(image)
+            # ComfyUI's intermediate_device() defaults to CPU, so vae.encode output
+            # may land on CPU while `device` (kwargs) is CUDA — sync explicitly before
+            # the downstream torch.cat calls.
+            image = image.to(device=device, dtype=dtype)
             if image.ndim == 4:
                 # [B, 16, H, W] → [B, 16, 1, H, W]
                 image = image.unsqueeze(2)

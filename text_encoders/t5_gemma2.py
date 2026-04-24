@@ -151,7 +151,7 @@ class MotifVideoT5Gemma2Model(nn.Module, ClipTokenWeightEncoder):
         # num_layers shim (SDClipModel compatibility)
         self.num_layers = encoder_config.text_config.num_hidden_layers
 
-        # DEBUG: instance id 포함하여 duplicate 생성 추적.
+        # DEBUG: include instance id so duplicate constructions are traceable.
         logging.info(
             "[MotifVideo] T5Gemma2Encoder initialised | device=%s dtype=%s hidden=%d layers=%d id=0x%x",
             device, dtype, encoder_config.text_config.hidden_size,
@@ -209,16 +209,21 @@ class MotifVideoT5Gemma2Model(nn.Module, ClipTokenWeightEncoder):
 
         hidden_state = outputs.last_hidden_state.float()
 
-        # 사용자 지시: attention_mask 는 downstream 으로 전달하지 않고, 여기서
-        # padded 뒷부분을 잘라 버림. HF PR #8 패턴 (use_attention_mask=False + padding trim).
-        # 의도: transformer cross-attention 에 seq_len=valid_len 만 보내 mask 생성 불필요 →
-        # SDPA 가 mask=None 경로로 cuDNN/Flash 자동 선택.
+        # Per user direction: don't pass attention_mask downstream — trim the
+        # padded tail here instead. This follows the HF PR #8 pattern
+        # (use_attention_mask=False + padding trim). Intent: the transformer's
+        # cross-attention only sees seq_len = valid_len, so it doesn't need a
+        # mask, and SDPA's mask=None branch lets cuDNN/Flash be selected
+        # automatically.
         #
-        # 배치 안전성 (Codex HIGH 방어): 불균일 배치 (CFG 에서 positive/negative 길이 상이
-        # 등) 는 max trim 만으로는 짧은 sample 의 padded 잔재가 cross-attend 되어 의도치
-        # 않은 conditioning. 그 경우 trim 자체 포기하고 원본 반환. ComfyUI MotifVideo
-        # 표준 workflow 는 CFG 에서도 batch=1 로 개별 forward (실측 q=(1, 12, 114233, 128))
-        # 라 대부분 uniform 경로로 진입.
+        # Batch safety (Codex HIGH defense): for non-uniform batches (e.g.
+        # CFG where positive and negative differ in length), a simple max-
+        # trim leaves padded residue inside shorter samples, which then
+        # cross-attends and silently contaminates conditioning. In that case
+        # we give up on trimming and return the original tensor. The standard
+        # ComfyUI MotifVideo workflow runs CFG as batch=1 per forward
+        # (measured q=(1, 12, 114233, 128)), so the uniform path is hit in
+        # practice.
         if attention_mask is not None and attention_mask.shape[0] >= 1:
             valid_lens = attention_mask.sum(dim=1)  # [B]
             first_len = valid_lens[0]
@@ -227,9 +232,11 @@ class MotifVideoT5Gemma2Model(nn.Module, ClipTokenWeightEncoder):
                 max_valid = int(first_len.item())
                 if 0 < max_valid < hidden_state.shape[1]:
                     hidden_state = hidden_state[:, :max_valid, :].contiguous()
-            # else: 불균일 배치 — 원본 반환. padded 위치는 attend 되지만 crash 보다
-            #       safe 선택. uniform 조건 위반은 비표준 workflow 이므로 별도 대응
-            #       (추후 per-sample packed attention 으로 확장 가능).
+            # else: non-uniform batch — return the original tensor. Padded
+            #       positions are still attended, but that is a safer choice
+            #       than crashing. Violating the uniformity assumption means
+            #       a non-standard workflow; a future extension could use
+            #       per-sample packed attention.
 
         return hidden_state, None
 

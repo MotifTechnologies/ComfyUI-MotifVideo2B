@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """ComfyUI Manager custom node install script — delegates to pip install -r requirements.txt.
 
-ComfyUI Manager 는 custom node 설치 시 이 파일이 존재하면 자동 실행한다.
-requirements.txt 의 pip install-able 의존성을 설치한다 (Manager 도 별도로 호출하지만
-수동 git clone 경로 호환을 위해 여기서도 실행).
+ComfyUI Manager auto-runs this file when it is present during custom-node
+installation. It installs the pip-installable dependencies from
+requirements.txt (Manager also invokes pip itself, but we run it here too
+so the manual `git clone` path works the same way).
 """
 from __future__ import annotations
 

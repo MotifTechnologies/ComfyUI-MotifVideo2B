@@ -11,8 +11,9 @@
 #   dual-block   (pre_only=False, added_kv=True)  — TransformerBlock
 #
 # Design note:
-#   P1.1 snapshot `tests/transformer/expected_attn_keys.json` block index 0 기준으로 설계됨.
-#   다른 block index 도 동일 구조 가정 (recommender 제안 2).
+#   Designed against the P1.1 snapshot `tests/transformer/expected_attn_keys.json`
+#   for block index 0. All other block indexes are assumed to share the same
+#   structure (recommender proposal 2).
 
 from __future__ import annotations
 
@@ -23,9 +24,11 @@ import torch.nn as nn
 
 from comfy.ldm.modules.attention import optimized_attention
 
-# DEBUG: 첫 forward 호출 시 1회만 optimized_attention 의 실 backend + mask 상태 출력.
-# ComfyUI 가 자동 선택한 커널 (attention_pytorch/attention_flash/attention_xformers 등) 을
-# 확인하기 위함. 환경변수 MOTIFVIDEO_DEBUG_ATTN 미설정이면 완전 noop.
+# DEBUG: on the very first forward call, print optimized_attention's actual
+# backend + mask state once. This is how we confirm which kernel ComfyUI
+# auto-selected (attention_pytorch / attention_flash / attention_xformers /
+# ...). Without the MOTIFVIDEO_DEBUG_ATTN env var set this is effectively a
+# no-op.
 _DEBUG_ATTN_PRINTED = False
 
 
@@ -131,8 +134,11 @@ class MotifVideoAttention(nn.Module):
     ):
         super().__init__()
 
-        # 지원 조합은 2가지: (Single) pre_only=True & added_kv=False, (Dual) pre_only=False & added_kv=True.
-        # 그 외 조합 (True/True, False/False) 은 checkpoint state_dict 과 mismatch 되므로 즉시 차단.
+        # Only two combinations are supported:
+        #   Single : pre_only=True  & added_kv=False
+        #   Dual   : pre_only=False & added_kv=True
+        # Anything else (True/True, False/False) would mismatch the checkpoint
+        # state_dict, so we reject it up front.
         if pre_only == added_kv:
             raise ValueError(
                 f"MotifVideoAttention: unsupported combo pre_only={pre_only}, added_kv={added_kv}. "
@@ -227,8 +233,9 @@ class MotifVideoAttention(nn.Module):
         key_input: Optional[torch.Tensor] = None,
         value_input: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
-        # DEBUG: global flag — forward 함수 최상단에 1회만 선언 (Python 은 같은 함수에서
-        # global 이후 재선언 시 SyntaxError).
+        # DEBUG: declare the global flag once at the top of forward. Re-
+        # declaring `global` on the same name later in the same function
+        # raises SyntaxError in Python.
         global _DEBUG_ATTN_PRINTED
 
         # Cross-attention mode: query already projected externally (cross_attn_query_proj + norm),
@@ -323,7 +330,7 @@ class MotifVideoAttention(nn.Module):
             key = torch.cat([key, encoder_key], dim=2)
             value = torch.cat([value, encoder_value], dim=2)
 
-        # 5. Attention (ComfyUI optimized_attention — Flash/cuDNN/XFORMERS 자동 선택)
+        # 5. Attention (ComfyUI optimized_attention — auto-selects Flash / cuDNN / xFormers)
         if not _DEBUG_ATTN_PRINTED:
             _DEBUG_ATTN_PRINTED = True
             _m = attention_mask

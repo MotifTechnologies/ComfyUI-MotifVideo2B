@@ -305,14 +305,13 @@ class MotifVideoT5Gemma2Model(nn.Module, ClipTokenWeightEncoder):
         ship with it, while the HuggingFace re-serialized snapshot under
         `text_encoder/model.safetensors` drops it.  Both formats are accepted.
 
-        The vision tower also has a one-level nesting difference between the
-        two formats: HF wraps it in `vision_tower.vision_model.encoder.*`,
-        while `T5Gemma2EncoderConfig`'s model object expects a flat
-        `vision_tower.encoder.*`.  The extra `vision_model.` segment is
-        removed on load.  (Vision weights are dead in the current T2V/I2V
-        paths — I2V goes through the VAE concat path — but we keep the
-        mapping correct so the loaded parameters match what the model
-        architecture defines.)
+        Vision tower keys are forwarded as-is. Different transformers
+        versions disagree on whether `T5Gemma2Encoder.vision_tower` uses
+        a flat `.encoder.*` or a nested `.vision_model.encoder.*` layout;
+        we do not remap either way. Vision weights are dead in the current
+        T2V and I2V paths (I2V feeds the VAE concat path, not
+        T5Gemma2Encoder.pixel_values), so a stale `vision_tower.*` miss is
+        cosmetic. Text-model keys stay the authoritative contract.
         """
         # Submodules that live directly on T5Gemma2Encoder (not under text_model).
         _direct_submodules = {"vision_tower", "multi_modal_projector"}
@@ -324,8 +323,7 @@ class MotifVideoT5Gemma2Model(nn.Module, ClipTokenWeightEncoder):
             top = inner.split(".")[0]
             if top in _direct_submodules:
                 # vision_tower.* / multi_modal_projector.*  → direct on encoder.
-                # Strip the HF `vision_tower.vision_model.` wrapper when present.
-                mapped[inner.replace("vision_tower.vision_model.", "vision_tower.", 1)] = v
+                mapped[inner] = v
             else:
                 # embed_tokens.* / layers.* / norm.*  → under text_model
                 mapped["text_model." + inner] = v

@@ -1,6 +1,5 @@
 """MotifVideo loader nodes."""
 
-import os
 import logging
 import torch
 
@@ -12,9 +11,8 @@ import comfy.supported_models_base as supported_models_base
 class MotifTextEncoderLoader:
     """Load MotifVideo T5Gemma2 text encoder (CLIPLoader style).
 
-    Select model.safetensors from models/text_encoders/ dropdown.
-    config.json is auto-detected in the same directory.
-    Tokenizer is auto-detected as sibling directory (same parent + /tokenizer/).
+    Select the `motifvideo_t5gemma2.safetensors` file from the `text_encoders` dropdown.
+    Config values and tokenizer are bundled with the node.
 
     Output CLIP is compatible with CLIPTextEncode and KSampler.
     """
@@ -37,8 +35,8 @@ class MotifTextEncoderLoader:
 
     DESCRIPTION = (
         "Load MotifVideo T5Gemma2 text encoder.\n"
-        "Select model.safetensors from text_encoders folder.\n"
-        "config.json and tokenizer are auto-detected.\n"
+        "Select the `motifvideo_t5gemma2.safetensors` file from the `text_encoders` dropdown.\n"
+        "Config values and tokenizer are bundled with the node.\n"
         "Output is compatible with CLIPTextEncode."
     )
 
@@ -55,41 +53,12 @@ class MotifTextEncoderLoader:
 
         clip_path = folder_paths.get_full_path_or_raise("text_encoders", clip_name)
 
-        # Auto-detect: if clip_name is inside a directory, look for config.json there
-        clip_dir = os.path.dirname(clip_path)
-        config_path = os.path.join(clip_dir, "config.json")
-        if not os.path.exists(config_path):
-            raise FileNotFoundError(
-                f"config.json not found in {clip_dir}. "
-                "Put model.safetensors and config.json in the same directory."
-            )
-
-        # Auto-detect tokenizer: look for sibling 'tokenizer' dir or parent/tokenizer
-        tokenizer_path = None
-        parent = os.path.dirname(clip_dir)
-        for candidate in [
-            os.path.join(parent, "tokenizer"),          # sibling: ../tokenizer/
-            os.path.join(clip_dir, "tokenizer"),         # child: ./tokenizer/
-            os.path.join(clip_dir, "..", "tokenizer"),    # parent sibling
-        ]:
-            if os.path.isdir(candidate) and os.path.exists(os.path.join(candidate, "tokenizer.json")):
-                tokenizer_path = os.path.realpath(candidate)
-                break
-
-        if tokenizer_path is None:
-            raise FileNotFoundError(
-                f"tokenizer directory not found near {clip_dir}. "
-                "Expected a 'tokenizer/' directory with tokenizer.json next to the text_encoder."
-            )
-
         logging.info("[MotifVideo] Loading text encoder: %s", clip_path)
-        logging.info("[MotifVideo] Config: %s", config_path)
-        logging.info("[MotifVideo] Tokenizer: %s", tokenizer_path)
 
         state_dict = safetensors.torch.load_file(clip_path, device="cpu")
 
         model_options = {}
-        tokenizer_data = {"motifvideo_tokenizer_path": tokenizer_path}
+        tokenizer_data = {}
 
         if device == "cpu":
             model_options["load_device"] = torch.device("cpu")

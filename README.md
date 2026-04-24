@@ -22,14 +22,6 @@
 Motif-Video 2B is a flow-matching diffusion transformer organized around a three-stage DDT-style backbone (dual-stream + single-stream + DDT decoder) with **Shared Cross-Attention** for long-context text alignment. The architectural derivation and full training recipe are in the [Motif-Video 2B technical report](https://arxiv.org/abs/2604.16503); this repository ships the inference-time ComfyUI integration.
 
 
-<p align="center">
-  <img src="assets/demo.gif" width="100%" alt="ComfyUI-MotifVideo2B demo"/>
-</p>
-
-<p align="center">
-  <img src="assets/demo_i2v.gif" width="100%" alt="ComfyUI-MotifVideo2B I2V demo"/>
-</p>
-
 ---
 
 ## Installation
@@ -121,7 +113,7 @@ Measured on a single H200 with the default 1280×736, 121-frame workflow:
 ## Text-to-Video
 
 <p align="center">
-  <img src="assets/T2V_example.png" width="100%" alt="Motif-Video 2B text-to-video example"/>
+  <img src="assets/demo.gif" width="100%" alt="ComfyUI-MotifVideo2B demo"/>
 </p>
 
 T2V is the default sampling path: `MotifVideo Text Encode` feeds `KSampler` directly, with no image-conditioning branch. The full wiring is in [`workflows/Motif-2B_T2V_example.json`](workflows/Motif-2B_T2V_example.json), shipped as a reusable ComfyUI subgraph.
@@ -137,13 +129,13 @@ Recommended parameters, as shipped in `Motif-2B_T2V_example.json`:
 ## Image-to-Video
 
 <p align="center">
-  <img src="assets/I2V_example.png" width="100%" alt="Motif-Video 2B image-to-video example"/>
+  <img src="assets/demo_i2v.gif" width="100%" alt="ComfyUI-MotifVideo2B I2V demo"/>
 </p>
 
 For I2V, `MotifVideo Image Encode` sits between `MotifVideo Text Encode` and `KSampler`: it VAE-encodes the input image and injects it into the conditioning as `concat_latent_image`, so downstream nodes continue to see a normal `CONDITIONING` pair. The full wiring is in [`workflows/Motif-2B_I2V_example.json`](workflows/Motif-2B_I2V_example.json).
 
 Recommended parameters, as shipped in `Motif-2B_I2V_example.json`:
-- `ModelSamplingSD3` shift = 15
+- `ModelSamplingSD3` shift = 8
 - `APG` eta = 0, norm_threshold = 12, momentum = 0.1 (Adaptive Projected Guidance, between ModelSamplingSD3 and KSampler)
 - `KSampler` cfg = 8.0, steps = 50, sampler = `dpmpp_2m`, scheduler = `simple`
 - `EmptyMotifLatent` 1280×736, 33, 65 or 121 frames

@@ -72,18 +72,7 @@ The VAE is in diffusers layout; its `state_dict` keys are remapped to ComfyUI's 
 
 ### Automatic model download
 
-Recent ComfyUI versions can provision the three weight files for you. When you load `Motif-2B_T2V_example.json` or `Motif-2B_I2V_example.json`, the ComfyUI frontend reads the top-level `models` manifest embedded in the workflow JSON and — if any of the three required files is missing under `models/diffusion_models/`, `models/text_encoders/`, or `models/vae/` — opens a one-click download dialog that fetches them directly from the Hugging Face repository.
-
-- **Supported frontend**: `@comfyorg/comfyui-frontend` (recent versions). Older ComfyUI installs silently ignore the top-level `models` key and fall back to the manual path above; the workflow still loads, but the automatic dialog will not appear.
-- **Supported file types only**: ComfyUI downloads `.safetensors` / `.sft` through this path. The GGUF variant (`MotifVideoUnetLoaderGGUF`) is not wired to the dialog; use the manual `huggingface-cli` instructions if you want the GGUF build.
-- **HF URL policy**: the manifest entries point at `https://huggingface.co/Motif-Technologies/Motif-Video-2B/resolve/main/...`. That URL always resolves to the latest upload on the Hugging Face repo. If you need bit-for-bit reproducibility, prefer the manual command above and pin a specific revision.
-- **Offline / air-gapped hosts**: the `huggingface-cli` flow above remains the primary supported path; the download dialog is a convenience layer, not a replacement.
-
-### Migrating from a previous install
-
-Earlier versions required a directory layout under `models/text_encoders/` (one directory for the text encoder weights and a second for the tokenizer files). That is no longer used — this node bundles the T5Gemma2 tokenizer and config, and the loader only needs a single `motifvideo_t5gemma2.safetensors` file.
-
-If you have a previous install, move the text-encoder weight out of the old `motifvideo_t5gemma2/` subdirectory, rename it to `motifvideo_t5gemma2.safetensors`, and delete both the `motifvideo_t5gemma2/` and `motifvideo_tokenizer/` directories. Then re-select the text encoder inside the workflow.
+Recent ComfyUI versions read the `models` manifest embedded in `Motif-2B_T2V_example.json` / `Motif-2B_I2V_example.json` and offer a one-click dialog to pull the three weight files straight from Hugging Face the first time you open the workflow. Older ComfyUI installs ignore the manifest and fall back to the manual `huggingface-cli` path above.
 
 ---
 

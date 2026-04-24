@@ -300,20 +300,32 @@ class MotifVideoT5Gemma2Model(nn.Module, ClipTokenWeightEncoder):
         Text-model submodules (embed_tokens, layers, norm) are under
         T5Gemma2Encoder.text_model, so they need the 'text_model.' prefix
         added.  Vision/projector submodules live directly on the encoder.
+
+        The 'encoder.' prefix is optional: legacy motif-models checkpoints
+        ship with it, while the HuggingFace re-serialized snapshot under
+        `text_encoder/model.safetensors` drops it.  Both formats are accepted.
+
+        The vision tower also has a one-level nesting difference between the
+        two formats: HF wraps it in `vision_tower.vision_model.encoder.*`,
+        while `T5Gemma2EncoderConfig`'s model object expects a flat
+        `vision_tower.encoder.*`.  The extra `vision_model.` segment is
+        removed on load.  (Vision weights are dead in the current T2V/I2V
+        paths — I2V goes through the VAE concat path — but we keep the
+        mapping correct so the loaded parameters match what the model
+        architecture defines.)
         """
         # Submodules that live directly on T5Gemma2Encoder (not under text_model).
         _direct_submodules = {"vision_tower", "multi_modal_projector"}
 
         mapped = {}
         for k, v in sd.items():
-            if not k.startswith("encoder."):
-                # Pass through keys not belonging to encoder (e.g. decoder.*)
-                continue
-            inner = k[len("encoder."):]  # strip 'encoder.' prefix
+            # Accept both prefixed (motif-internal) and bare (HF) keys.
+            inner = k[len("encoder."):] if k.startswith("encoder.") else k
             top = inner.split(".")[0]
             if top in _direct_submodules:
-                # vision_tower.* / multi_modal_projector.*  → direct on encoder
-                mapped[inner] = v
+                # vision_tower.* / multi_modal_projector.*  → direct on encoder.
+                # Strip the HF `vision_tower.vision_model.` wrapper when present.
+                mapped[inner.replace("vision_tower.vision_model.", "vision_tower.", 1)] = v
             else:
                 # embed_tokens.* / layers.* / norm.*  → under text_model
                 mapped["text_model." + inner] = v

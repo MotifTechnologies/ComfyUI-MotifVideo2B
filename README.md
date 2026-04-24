@@ -121,8 +121,8 @@ T2V is the default sampling path: `MotifVideo Text Encode` feeds `KSampler` dire
 Recommended parameters, as shipped in `Motif-2B_T2V_example.json`:
 - `ModelSamplingSD3` shift = 15
 - `APG` eta = 0, norm_threshold = 12, momentum = 0.1 (Adaptive Projected Guidance, between ModelSamplingSD3 and KSampler)
-- `KSampler` cfg = 8.0, steps = 50, sampler = `dpmpp_2m_sde`, scheduler = `simple`
-- `EmptyMotifLatent` 1280×736, 33 frames
+- `KSampler` cfg = 8.0, steps = 50, sampler = `dpmpp_2m`, scheduler = `simple`
+- `EmptyMotifLatent` 1280×736, 33, 65 or 121 frames
 
 ---
 
@@ -131,9 +131,10 @@ Recommended parameters, as shipped in `Motif-2B_T2V_example.json`:
 For I2V, `MotifVideo Image Encode` sits between `MotifVideo Text Encode` and `KSampler`: it VAE-encodes the input image and injects it into the conditioning as `concat_latent_image`, so downstream nodes continue to see a normal `CONDITIONING` pair. The full wiring is in [`workflows/Motif-2B_I2V_example.json`](workflows/Motif-2B_I2V_example.json).
 
 Recommended parameters, as shipped in `Motif-2B_I2V_example.json`:
-- `ModelSamplingSD3` shift = 8
-- `KSampler` cfg = 8.0, steps = 50, sampler = `uni_pc`, scheduler = `simple`
-- `EmptyMotifLatent` 1280×736, 33 frames
+- `ModelSamplingSD3` shift = 15
+- `APG` eta = 0, norm_threshold = 12, momentum = 0.1 (Adaptive Projected Guidance, between ModelSamplingSD3 and KSampler)
+- `KSampler` cfg = 8.0, steps = 50, sampler = `dpmpp_2m`, scheduler = `simple`
+- `EmptyMotifLatent` 1280×736, 33, 65 or 121 frames
 
 Switch back to T2V by removing the `MotifVideo Image Encode` node and wiring `MotifVideo Text Encode` straight into `KSampler` — or just load the T2V workflow instead.
 
@@ -143,8 +144,8 @@ Switch back to T2V by removing the `MotifVideo Image Encode` node and wiring `Mo
 
 The standard MotifVideo sampling graph flows `UNETLoader → ModelSamplingSD3 → KSampler → VAE Decode → Create Video → Save Video`, with `MotifTextEncoderLoader + MotifTextEncode` feeding the KSampler conditioning and `EmptyMotifLatent` seeding the latent. Load the example JSON through ComfyUI's **Load** menu rather than rebuilding the graph by hand:
 
-- [`workflows/Motif-2B_T2V_example.json`](workflows/Motif-2B_T2V_example.json) — default Text-to-Video graph (1280×736, KSampler `dpmpp_2m_sde` / `simple` / 50 steps, wrapped as a reusable ComfyUI subgraph).
-- [`workflows/Motif-2B_I2V_example.json`](workflows/Motif-2B_I2V_example.json) — Image-to-Video graph (1280×736 / 33 frames, KSampler `uni_pc` / `simple` / 50 steps, `ModelSamplingSD3` shift 8).
+- [`workflows/Motif-2B_T2V_example.json`](workflows/Motif-2B_T2V_example.json) — Text-to-Video graph 
+- [`workflows/Motif-2B_I2V_example.json`](workflows/Motif-2B_I2V_example.json) — Image-to-Video graph 
 
 Make sure the model files described in the [Installation](#installation) section are in place first, and that the `UNETLoader` / text-encoder / VAE selections inside the loaded workflow match your local filenames.
 

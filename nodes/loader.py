@@ -88,7 +88,7 @@ class MotifTextEncoderLoader:
 
         state_dict = safetensors.torch.load_file(clip_path, device="cpu")
 
-        model_options = {"motifvideo_config_path": config_path}
+        model_options = {}
         tokenizer_data = {"motifvideo_tokenizer_path": tokenizer_path}
 
         if device == "cpu":

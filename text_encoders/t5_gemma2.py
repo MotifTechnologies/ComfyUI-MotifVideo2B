@@ -24,6 +24,8 @@ import torch.nn as nn
 from comfy import sd1_clip
 from comfy.sd1_clip import ClipTokenWeightEncoder
 
+from .t5_gemma2_config import T5_GEMMA2_CONFIG
+
 
 # ---------------------------------------------------------------------------
 # Tokenizer
@@ -113,22 +115,10 @@ class MotifVideoT5Gemma2Model(nn.Module, ClipTokenWeightEncoder):
     def __init__(self, device="cpu", dtype=None, model_options={}):
         super().__init__()
 
-        from transformers import T5Gemma2Config
+        from transformers.models.t5gemma2.configuration_t5gemma2 import T5Gemma2EncoderConfig
         from transformers.models.t5gemma2.modeling_t5gemma2 import T5Gemma2Encoder
-        import json
 
-        config_path = model_options.get("motifvideo_config_path", None)
-        if config_path is None:
-            raise ValueError(
-                "motifvideo_config_path must be provided in model_options. "
-                "Use MotifTextEncoderLoader node to load the text encoder."
-            )
-
-        with open(config_path) as f:
-            cfg_dict = json.load(f)
-
-        full_config = T5Gemma2Config(**cfg_dict)
-        encoder_config = full_config.encoder
+        encoder_config = T5Gemma2EncoderConfig(**T5_GEMMA2_CONFIG)
 
         if dtype is None:
             dtype = torch.bfloat16

@@ -26,6 +26,10 @@ Motif-Video 2B is a flow-matching diffusion transformer organized around a three
   <img src="assets/demo.gif" width="100%" alt="ComfyUI-MotifVideo2B demo"/>
 </p>
 
+<p align="center">
+  <img src="assets/demo_i2v.gif" width="100%" alt="ComfyUI-MotifVideo2B I2V demo"/>
+</p>
+
 ---
 
 ## Installation

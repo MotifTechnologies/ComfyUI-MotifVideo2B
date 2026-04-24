@@ -24,6 +24,8 @@ import torch.nn as nn
 from comfy import sd1_clip
 from comfy.sd1_clip import ClipTokenWeightEncoder
 
+from .t5_gemma2_config import T5_GEMMA2_CONFIG
+
 
 # ---------------------------------------------------------------------------
 # Tokenizer
@@ -32,8 +34,10 @@ from comfy.sd1_clip import ClipTokenWeightEncoder
 class MotifVideoTokenizer(sd1_clip.SDTokenizer):
     """GemmaTokenizer wrapped as SDTokenizer for ComfyUI.
 
-    tokenizer_path must be a directory containing tokenizer.json /
-    tokenizer_config.json (the standard HuggingFace layout).
+    Defaults to the bundled directory at ``text_encoders/tokenizer_assets/``
+    (tokenizer.json + tokenizer_config.json shipped with the node). Callers
+    may override with ``tokenizer_data["motifvideo_tokenizer_path"]`` to
+    point to an alternate HuggingFace-layout directory.
 
     Special token mapping:
       bos_token_id = 2  → SDTokenizer start_token
@@ -45,13 +49,15 @@ class MotifVideoTokenizer(sd1_clip.SDTokenizer):
     explicitly.
     """
 
+    _BUNDLED_TOKENIZER_DIR = os.path.join(
+        os.path.dirname(os.path.realpath(__file__)),
+        "tokenizer_assets",
+    )
+
     def __init__(self, embedding_directory=None, tokenizer_data={}):
         tokenizer_path = tokenizer_data.get(
             "motifvideo_tokenizer_path",
-            os.path.join(
-                os.path.dirname(os.path.dirname(os.path.realpath(__file__))),
-                "..",   # not bundled — must be supplied via tokenizer_data
-            ),
+            self._BUNDLED_TOKENIZER_DIR,
         )
 
         from transformers import GemmaTokenizerFast
@@ -113,22 +119,10 @@ class MotifVideoT5Gemma2Model(nn.Module, ClipTokenWeightEncoder):
     def __init__(self, device="cpu", dtype=None, model_options={}):
         super().__init__()
 
-        from transformers import T5Gemma2Config
+        from transformers.models.t5gemma2.configuration_t5gemma2 import T5Gemma2EncoderConfig
         from transformers.models.t5gemma2.modeling_t5gemma2 import T5Gemma2Encoder
-        import json
 
-        config_path = model_options.get("motifvideo_config_path", None)
-        if config_path is None:
-            raise ValueError(
-                "motifvideo_config_path must be provided in model_options. "
-                "Use MotifTextEncoderLoader node to load the text encoder."
-            )
-
-        with open(config_path) as f:
-            cfg_dict = json.load(f)
-
-        full_config = T5Gemma2Config(**cfg_dict)
-        encoder_config = full_config.encoder
+        encoder_config = T5Gemma2EncoderConfig(**T5_GEMMA2_CONFIG)
 
         if dtype is None:
             dtype = torch.bfloat16
@@ -306,19 +300,29 @@ class MotifVideoT5Gemma2Model(nn.Module, ClipTokenWeightEncoder):
         Text-model submodules (embed_tokens, layers, norm) are under
         T5Gemma2Encoder.text_model, so they need the 'text_model.' prefix
         added.  Vision/projector submodules live directly on the encoder.
+
+        The 'encoder.' prefix is optional: legacy motif-models checkpoints
+        ship with it, while the HuggingFace re-serialized snapshot under
+        `text_encoder/model.safetensors` drops it.  Both formats are accepted.
+
+        Vision tower keys are forwarded as-is. Different transformers
+        versions disagree on whether `T5Gemma2Encoder.vision_tower` uses
+        a flat `.encoder.*` or a nested `.vision_model.encoder.*` layout;
+        we do not remap either way. Vision weights are dead in the current
+        T2V and I2V paths (I2V feeds the VAE concat path, not
+        T5Gemma2Encoder.pixel_values), so a stale `vision_tower.*` miss is
+        cosmetic. Text-model keys stay the authoritative contract.
         """
         # Submodules that live directly on T5Gemma2Encoder (not under text_model).
         _direct_submodules = {"vision_tower", "multi_modal_projector"}
 
         mapped = {}
         for k, v in sd.items():
-            if not k.startswith("encoder."):
-                # Pass through keys not belonging to encoder (e.g. decoder.*)
-                continue
-            inner = k[len("encoder."):]  # strip 'encoder.' prefix
+            # Accept both prefixed (motif-internal) and bare (HF) keys.
+            inner = k[len("encoder."):] if k.startswith("encoder.") else k
             top = inner.split(".")[0]
             if top in _direct_submodules:
-                # vision_tower.* / multi_modal_projector.*  → direct on encoder
+                # vision_tower.* / multi_modal_projector.*  → direct on encoder.
                 mapped[inner] = v
             else:
                 # embed_tokens.* / layers.* / norm.*  → under text_model

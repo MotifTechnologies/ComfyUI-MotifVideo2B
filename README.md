@@ -26,7 +26,17 @@ Motif-Video 2B is a flow-matching diffusion transformer organized around a three
 
 ## Installation
 
+### Install via ComfyUI-Manager (recommended)
+
+Open ComfyUI-Manager, click **Install via Git URL**, enter the repository URL below, and restart ComfyUI:
+
+- `https://github.com/MotifTechnologies/ComfyUI-MotifVideo2B`
+
+Manager runs `install.py` automatically, which installs all entries in `requirements.txt`. After restarting and loading either example workflow, the automatic model-download dialog described in [Automatic model download](#automatic-model-download) will pull the three weight files from Hugging Face on first use.
+
 ### 1. Install the custom nodes
+
+If you don't use ComfyUI-Manager:
 
 ```bash
 cd /path/to/ComfyUI/custom_nodes

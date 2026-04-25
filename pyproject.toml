@@ -1,10 +1,16 @@
 [project]
-name = "comfyui-motifvideo-1-9b"
+name = "comfyui-motifvideo-2b"
 version = "0.1.0"
-description = "ComfyUI custom nodes for MotifVideo 1.9B video generation"
+description = "ComfyUI custom nodes for Motif-Video 2B video generation"
 requires-python = ">=3.10"
 dependencies = [
     "diffusers>=0.35.2",
-    "transformers>=5.0.0",
+    "transformers>=5.5.4",
     "einops",
+    "sentencepiece",
 ]
+
+[project.urls]
+Repository = "https://github.com/MotifTechnologies/ComfyUI-MotifVideo2B"
+HuggingFace = "https://huggingface.co/Motif-Technologies/Motif-Video-2B"
+Issues = "https://github.com/MotifTechnologies/ComfyUI-MotifVideo2B/issues"

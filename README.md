@@ -76,6 +76,8 @@ Recent ComfyUI versions read the `models` manifest embedded in `Motif-2B_T2V_exa
 
 If the download dialog does not appear right away on the first drop, drop the workflow once more — ComfyUI's model directory scan can still be initializing.
 
+Tested on ComfyUI v0.18.0 (frontend v1.25.3).
+
 ---
 
 ## Usage

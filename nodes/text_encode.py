@@ -1,0 +1,40 @@
+"""MotifVideo text encoding node.
+
+Convenience node that encodes both positive and negative prompts in one step.
+Also compatible with standard CLIPTextEncode node (use that if you prefer
+separate positive/negative encoding).
+"""
+
+
+class MotifTextEncode:
+    """Encode positive and negative prompts for MotifVideo in one node.
+
+    Equivalent to two CLIPTextEncode nodes but combined for convenience.
+    Output CONDITIONING is compatible with KSampler positive/negative inputs.
+    """
+
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "clip": ("CLIP",),
+                "text": ("STRING", {"multiline": True, "default": ""}),
+                "negative_prompt": (
+                    "STRING",
+                    {
+                        "multiline": True,
+                        "default": "blurry, low quality, distorted, artifacts",
+                    },
+                ),
+            }
+        }
+
+    RETURN_TYPES = ("CONDITIONING", "CONDITIONING")
+    RETURN_NAMES = ("positive", "negative")
+    FUNCTION = "encode"
+    CATEGORY = "motifvideo"
+
+    def encode(self, clip, text, negative_prompt):
+        positive = clip.encode_from_tokens_scheduled(clip.tokenize(text))
+        negative = clip.encode_from_tokens_scheduled(clip.tokenize(negative_prompt))
+        return (positive, negative)

@@ -26,17 +26,9 @@ Motif-Video 2B is a flow-matching diffusion transformer organized around a three
 
 ## Installation
 
-### Install via ComfyUI-Manager (recommended)
+### 1. Install the custom nodes (recommended)
 
-Open ComfyUI-Manager, click **Install via Git URL**, enter the repository URL below, and restart ComfyUI:
-
-- `https://github.com/MotifTechnologies/ComfyUI-MotifVideo2B`
-
-Manager runs `install.py` automatically, which installs all entries in `requirements.txt`. After restarting and loading either example workflow, the automatic model-download dialog described in [Automatic model download](#automatic-model-download) will pull the three weight files from Hugging Face on first use.
-
-### 1. Install the custom nodes
-
-If you don't use ComfyUI-Manager:
+Clone the repository and install dependencies:
 
 ```bash
 cd /path/to/ComfyUI/custom_nodes
@@ -45,6 +37,19 @@ pip install -r ComfyUI-MotifVideo2B/requirements.txt
 ```
 
 `motif_core` and `motif-pipelines` do not need to be installed separately — `MotifVideoTransformer3DModel` is bundled under `models/transformer/`, so the repository is self-contained.
+
+### Install via ComfyUI-Manager
+
+> **Heads-up:** an upstream `custom-node-list.json` registration PR is planned and will be opened shortly. This section will be revised after that PR merges.
+
+ComfyUI-Manager exposes two install paths for this repository, both subject to its `security_level` setting:
+
+- **Custom Nodes Manager** (search and install from the registry): not available yet — a `custom-node-list.json` registration PR to upstream Manager is **planned but not yet submitted**. Until that PR is opened and merged, this repository will not appear in Manager's search results.
+- **Install via Git URL** (paste a Git URL): under Manager's default `normal` security level, this path is rejected outright with `This action is not allowed with this security level configuration.` (the upstream policy requires `security_level = normal-` with `--listen` on a local IP, or `security_level = middle`/`weak`). It is not specific to externally-exposed setups.
+
+If neither Manager path works for you, fall back to the [git clone method above](#1-install-the-custom-nodes-recommended). Whether the **Custom Nodes Manager** search-and-install path works under the default `normal` security level after the registration PR merges depends on upstream Manager and registry policy at that time and is not something this repository can guarantee. The **Install via Git URL** path remains gated by Manager's security policy regardless of registration.
+
+When you use either of the two Manager paths above, Manager runs `install.py` automatically, which installs the entries in `requirements.txt`. (The manual `git clone` path documented earlier does not involve Manager — there you run `pip install -r requirements.txt` yourself.) After restarting and loading either example workflow, the automatic model-download dialog described in [Automatic model download](#automatic-model-download) will pull the three weight files from Hugging Face on first use, regardless of how the custom node was installed.
 
 ### 2. Download the model weights from Hugging Face
 

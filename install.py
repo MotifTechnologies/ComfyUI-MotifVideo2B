@@ -27,19 +27,31 @@ def _log(msg: str) -> None:
     print(f"[MotifVideo install] {msg}", flush=True)
 
 
-def install_requirements() -> None:
+def install_requirements() -> int:
     if not REQ.exists():
-        return
+        print(
+            f"[MotifVideo install] ERROR: requirements.txt not found at {REQ}.",
+            file=sys.stderr,
+            flush=True,
+        )
+        return 2
     try:
         _run([PY, "-m", "pip", "install", "-r", str(REQ)])
     except subprocess.CalledProcessError as e:
-        _log(f"WARN: pip install -r requirements.txt failed: {e}. Continuing.")
+        code = e.returncode
+        print(
+            f"[MotifVideo install] ERROR: pip install -r requirements.txt failed"
+            f" (exit {code}). See stderr above.",
+            file=sys.stderr,
+            flush=True,
+        )
+        return 1
+    return 0
 
 
 def main() -> int:
     _log(f"python: {PY}")
-    install_requirements()
-    return 0
+    return install_requirements()
 
 
 if __name__ == "__main__":

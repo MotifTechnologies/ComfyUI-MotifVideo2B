@@ -14,3 +14,10 @@ dependencies = [
 Repository = "https://github.com/MotifTechnologies/ComfyUI-MotifVideo2B"
 HuggingFace = "https://huggingface.co/Motif-Technologies/Motif-Video-2B"
 Issues = "https://github.com/MotifTechnologies/ComfyUI-MotifVideo2B/issues"
+
+[tool.comfy]
+PublisherId = "motiftech"
+DisplayName = "Motif-Video 2B"
+Icon = ""
+includes = []
+requires-comfyui = ">=0.18.0"

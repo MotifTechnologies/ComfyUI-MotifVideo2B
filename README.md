@@ -108,7 +108,7 @@ python main.py --highvram --listen 0.0.0.0 --port 8188
 - Without `--highvram` (default `NORMAL_VRAM`): a bf16 workflow runs at roughly **222 s/step** — the transformer is placed on the "staged" path and weights are dispatched every forward.
 - With `--highvram`: **30 s/step** — all weights stay resident on the GPU.
 
-**Why.** On hosts where ComfyUI's `comfy_aimdo` (`DynamicVRAM`) is active, models whose leaves use `comfy.ops.*` are automatically routed to the staged path under `NORMAL_VRAM`, which means weight dispatch on every forward. This repository's transformer deliberately uses `comfy.ops.*` end-to-end so that `fp8`/`manual_cast` paths work, which means the staging cannot be disabled at the model level. The engine-side workaround is `--highvram`. Tracked in #26. 
+**Why.** On hosts where ComfyUI's `comfy_aimdo` (`DynamicVRAM`) is active, models whose leaves use `comfy.ops.*` are automatically routed to the staged path under `NORMAL_VRAM`, which means weight dispatch on every forward. This repository's transformer deliberately uses `comfy.ops.*` end-to-end so that `fp8`/`manual_cast` paths work, which means the staging cannot be disabled at the model level. The engine-side workaround is `--highvram`.
 
 
 ---

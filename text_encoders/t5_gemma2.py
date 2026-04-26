@@ -119,15 +119,27 @@ class MotifVideoT5Gemma2Model(nn.Module, ClipTokenWeightEncoder):
         super().__init__()
 
         from transformers.models.t5gemma2.configuration_t5gemma2 import T5Gemma2EncoderConfig
-        from transformers.models.t5gemma2.modeling_t5gemma2 import T5Gemma2Encoder
+
+        from . import t5_gemma2_native
 
         encoder_config = T5Gemma2EncoderConfig(**T5_GEMMA2_CONFIG)
 
         if dtype is None:
             dtype = torch.bfloat16
 
-        # Instantiate encoder on target device with chosen dtype.
-        self.encoder = T5Gemma2Encoder(encoder_config).to(device=device, dtype=dtype)
+        # Use the native impl (comfy.ops injection enables ComfyUI's auto
+        # partial offload). model_options["operations"] follows the standard
+        # ComfyUI convention; default `disable_weight_init` skips redundant
+        # weight init prior to checkpoint load.
+        import comfy.ops
+        operations = model_options.get("operations", comfy.ops.disable_weight_init)
+
+        self.encoder = t5_gemma2_native.T5Gemma2Encoder(
+            encoder_config,
+            dtype=dtype,
+            device=device,
+            operations=operations,
+        )
         self.encoder.eval()
         for param in self.encoder.parameters():
             param.requires_grad = False

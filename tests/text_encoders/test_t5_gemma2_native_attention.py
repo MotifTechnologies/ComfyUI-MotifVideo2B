@@ -491,10 +491,24 @@ class TestT5Gemma2SelfAttentionForward:
         assert out.shape == (B, S, D)
 
     def test_forward_no_nan_for_random_input(self, cfg):
-        """Random float32 input must not produce NaN/Inf."""
+        """Random float32 input must not produce NaN/Inf.
+
+        Uses a fixed seed and small orthogonal weight init so the test is
+        deterministic regardless of suite ordering. Uninitialized weights
+        (default ``disable_weight_init``) combined with a hostile RNG state
+        can otherwise drive softmax denominators to zero, producing NaN.
+        """
+        torch.manual_seed(2025)
         attn = T5Gemma2SelfAttention(cfg, layer_idx=0)
         attn.eval()
+        with torch.no_grad():
+            for p in attn.parameters():
+                if p.dim() >= 2:
+                    torch.nn.init.orthogonal_(p, gain=0.01)
+                else:
+                    p.fill_(0.01)
         B, S, D = 2, 16, 2560
+        torch.manual_seed(2025)
         hidden = torch.randn(B, S, D)
         cos, sin = _make_dummy_rope(B, S)
         with torch.no_grad():

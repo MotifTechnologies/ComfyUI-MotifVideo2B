@@ -176,3 +176,49 @@ class T5Gemma2SelfAttention(nn.Module):
         attn_output = attn_output.reshape(*input_shape, -1)
         attn_output = self.o_proj(attn_output)
         return attn_output
+
+
+# ---------------------------------------------------------------------------
+# MLP (HF modeling_t5gemma2.py:75-91, Apache 2.0)
+# ---------------------------------------------------------------------------
+
+class T5Gemma2MLP(nn.Module):
+    def __init__(self, config, dtype=None, device=None, operations=None):
+        super().__init__()
+        ops = operations if operations is not None else comfy.ops.disable_weight_init
+
+        self.config = config
+        self.hidden_size = config.hidden_size
+        self.intermediate_size = config.intermediate_size
+
+        self.gate_proj = ops.Linear(
+            self.hidden_size, self.intermediate_size,
+            bias=False, dtype=dtype, device=device,
+        )
+        self.up_proj = ops.Linear(
+            self.hidden_size, self.intermediate_size,
+            bias=False, dtype=dtype, device=device,
+        )
+        self.down_proj = ops.Linear(
+            self.intermediate_size, self.hidden_size,
+            bias=False, dtype=dtype, device=device,
+        )
+        # config.hidden_activation = "gelu_pytorch_tanh" — F.gelu(..., approximate="tanh")
+        self.act_fn = self._make_act_fn(config.hidden_activation)
+
+        # dropout_rate = 0 in this model; stored for HF interface parity.
+        self.dropout = nn.Dropout(config.dropout_rate)
+
+    @staticmethod
+    def _make_act_fn(name: str):
+        if name == "gelu_pytorch_tanh":
+            return lambda x: torch.nn.functional.gelu(x, approximate="tanh")
+        raise NotImplementedError(
+            f"T5Gemma2MLP: hidden_activation '{name}' not supported. "
+            f"Only 'gelu_pytorch_tanh' is wired for the bundled config."
+        )
+
+    def forward(self, x):
+        hidden_states = self.act_fn(self.gate_proj(x)) * self.up_proj(x)
+        hidden_states = self.dropout(hidden_states)
+        return self.down_proj(hidden_states)
